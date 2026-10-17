@@ -80,20 +80,47 @@ export default function MyResourcesPage() {
     })();
   }, []);
 
-  // Fetch real-time student purchases from Supabase purchases table
+  // Fetch real-time student purchases from Supabase purchases table and paid orders
   useEffect(() => {
     if (!student?.id) return;
     void (async () => {
-      const { data } = await supabase
-        .from("purchases")
-        .select("material_id, status")
-        .eq("student_id", student.id);
-      if (data) {
-        const ids = data
-          .filter((p) => p.status === "unlocked" || p.status === "paid" || p.status === "active")
-          .map((p) => String(p.material_id))
-          .filter(Boolean);
-        setRemotePurchases(ids);
+      try {
+        const { data: purs } = await supabase
+          .from("purchases")
+          .select("material_id, status, payment_status")
+          .eq("student_id", student.id);
+
+        const ids: string[] = [];
+        if (purs) {
+          purs.forEach((p) => {
+            const st = (p.status || "").toLowerCase();
+            const paySt = ((p as any).payment_status || "").toLowerCase();
+            if (st === "unlocked" || st === "paid" || st === "active" || paySt === "paid" || paySt === "free") {
+              if (p.material_id) ids.push(String(p.material_id));
+            }
+          });
+        }
+
+        const { data: ords } = await supabase
+          .from("orders")
+          .select("material_ids, product_id, status")
+          .eq("student_id", student.id)
+          .eq("status", "Paid");
+
+        if (ords) {
+          ords.forEach((o) => {
+            if (Array.isArray(o.material_ids)) {
+              o.material_ids.forEach((mid) => ids.push(String(mid)));
+            }
+            if (o.product_id && o.product_id !== "cart") {
+              ids.push(String(o.product_id));
+            }
+          });
+        }
+
+        setRemotePurchases(Array.from(new Set(ids)));
+      } catch (err) {
+        console.warn("Could not fetch remote purchases for my-resources:", err);
       }
     })();
   }, [student?.id]);

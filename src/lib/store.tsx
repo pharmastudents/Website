@@ -408,7 +408,19 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const hasAccess = useCallback(
     (material: Material): boolean => {
-      if (!material.isPremium || Number(material.price) === 0) return true;
+      if (!material) return false;
+
+      // Determine if item is genuinely paid vs free
+      const isPaid = Boolean(
+        (material as any).isPremium === true ||
+        (material as any).is_premium === true ||
+        Number(material.price || 0) > 0
+      );
+
+      // Only free materials (price 0 and not marked premium) are accessible by default
+      if (!isPaid) return true;
+
+      // Unauthenticated users do not own paid content
       if (!student) return false;
 
       // 1. Direct purchase / unlock check
@@ -416,7 +428,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         (p) =>
           p.studentId === student.id &&
           p.materialId === material.id &&
-          p.status === "unlocked",
+          (p.status === "unlocked" || (p as any).status === "paid" || (p as any).payment_status === "paid" || (p as any).payment_status === "free"),
       );
       if (directUnlocked) return true;
 

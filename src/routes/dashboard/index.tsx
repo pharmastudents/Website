@@ -137,17 +137,23 @@ export default function DashboardPage() {
   // Check if student owns/unlocked a material
   const checkUnlocked = (matId: string, isPremium: boolean, price: number): boolean => {
     if (!isPremium || price === 0) return true;
-    const directPurchase = dbPurchases.some((p) => p.material_id === matId);
-    if (directPurchase) return true;
-    const storeMat = db.materials.find((m) => m.id === matId);
-    if (storeMat && hasAccess(storeMat)) return true;
+    const directPurchase = dbPurchases.find((p) => p.material_id === matId);
+    if (directPurchase) {
+      const st = (directPurchase.status || "").toLowerCase();
+      const paySt = (directPurchase.payment_status || "").toLowerCase();
+      if (st === "unlocked" || st === "paid" || st === "active" || paySt === "paid" || paySt === "free") {
+        return true;
+      }
+    }
     const packageOrder = dbOrders.some(
       (o) =>
         o.status?.toLowerCase() === "paid" &&
-        Array.isArray(o.material_ids) &&
-        o.material_ids.includes(matId),
+        (o.product_id === matId || (Array.isArray(o.material_ids) && o.material_ids.includes(matId))),
     );
-    return packageOrder;
+    if (packageOrder) return true;
+    const storeMat = db.materials.find((m) => m.id === matId);
+    if (storeMat && hasAccess(storeMat)) return true;
+    return false;
   };
 
   // Metrics

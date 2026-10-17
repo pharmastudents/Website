@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { useStore, formatPrice } from "@/lib/store";
 import { useCart } from "@/lib/cartContext";
 import { AcademicService, type Course, type Semester, type SubjectItem, type MaterialItem } from "@/lib/academicService";
+import { supabase } from "@/integrations/supabase/client";
 import {
   BookOpen,
   ArrowRight,
@@ -65,6 +66,8 @@ export default function BPharmBrowsePage() {
   const [semesters, setSemesters] = useState<Semester[]>([]);
   const [subjects, setSubjects] = useState<SubjectItem[]>([]);
   const [materials, setMaterials] = useState<MaterialItem[]>([]);
+  const [dbPurchases, setDbPurchases] = useState<any[]>([]);
+  const [dbOrders, setDbOrders] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -89,6 +92,37 @@ export default function BPharmBrowsePage() {
       isMounted = false;
     };
   }, []);
+
+  // Fetch student's real purchases and paid orders from Supabase
+  useEffect(() => {
+    if (!student?.id) return;
+    let isMounted = true;
+    async function fetchStudentOwnership() {
+      try {
+        const { data: purs } = await supabase
+          .from("purchases")
+          .select("material_id, status, payment_status")
+          .eq("student_id", student.id);
+
+        const { data: ords } = await supabase
+          .from("orders")
+          .select("material_ids, product_id, status")
+          .eq("student_id", student.id)
+          .eq("status", "Paid");
+
+        if (isMounted) {
+          if (purs) setDbPurchases(purs);
+          if (ords) setDbOrders(ords);
+        }
+      } catch (err) {
+        console.warn("Could not fetch student purchases in bpharm:", err);
+      }
+    }
+    void fetchStudentOwnership();
+    return () => {
+      isMounted = false;
+    };
+  }, [student?.id]);
 
   // Selected state from URL query params
   const selectedCourseCode = searchParams.courseId || "bpharm";
@@ -115,8 +149,26 @@ export default function BPharmBrowsePage() {
   const checkOwned = (matId: string, isPremium: boolean, price: number) => {
     if (!isPremium || price === 0) return true;
     if (!student) return false;
-    const direct = db.purchases.some((p) => p.studentId === student.id && p.materialId === matId);
-    if (direct) return true;
+
+    // 1. Direct verified purchase in Supabase
+    const directPurch = dbPurchases.find((p) => p.material_id === matId);
+    if (directPurch) {
+      const st = (directPurch.status || "").toLowerCase();
+      const paySt = (directPurch.payment_status || "").toLowerCase();
+      if (st === "unlocked" || st === "paid" || st === "active" || paySt === "paid" || paySt === "free") {
+        return true;
+      }
+    }
+
+    // 2. Verified package or semester order in Supabase
+    const orderMatch = dbOrders.some((o) => {
+      if (o.product_id === matId) return true;
+      if (Array.isArray(o.material_ids) && o.material_ids.includes(matId)) return true;
+      return false;
+    });
+    if (orderMatch) return true;
+
+    // 3. Fallback to store
     const storeMat = db.materials.find((m) => m.id === matId);
     return Boolean(storeMat && hasAccess(storeMat));
   };

@@ -39,10 +39,12 @@ export const Route = createFileRoute("/checkout")({
 
 type CheckoutStatus = "idle" | "creating_order" | "ready" | "verifying" | "success" | "failed" | "cancelled" | "already_owned";
 
+import { usePurchaseDetection } from "@/lib/purchaseDetection";
+
 export default function CheckoutPage() {
   const searchParams = useSearch({ from: "/checkout" });
   const navigate = useNavigate();
-  const { student, db, ready, hasAccess } = useStore();
+  const { student, db, ready } = useStore();
   const { items: cartItems, totalAmount: cartTotal, clearCart } = useCart();
 
   const [termsAgreed, setTermsAgreed] = useState(false);
@@ -64,6 +66,14 @@ export default function CheckoutPage() {
   const fromCart = Boolean(searchParams.fromCart && cartItems.length > 0);
   const productId = fromCart ? cartItems[0]?.id : searchParams.productId;
   const productType = fromCart ? (cartItems[0]?.type || "material") : (searchParams.productType || "material");
+
+  // Authoritative purchase detection against Supabase database
+  const targetCheckId = fromCart ? null : productId;
+  const ownership = usePurchaseDetection(
+    student?.id,
+    targetCheckId,
+    (productType as any) || "material"
+  );
 
   // Check login requirement
   useEffect(() => {
@@ -147,19 +157,6 @@ export default function CheckoutPage() {
   const subject = dbMaterial?.subject_id
     ? db.subjects.find((s) => s.id === dbMaterial.subject_id)
     : undefined;
-
-  // Check if student already owns this
-  useEffect(() => {
-    if (student && productId) {
-      const alreadyOwned =
-        db.purchases.some((p) => p.studentId === student.id && p.materialId === productId) ||
-        (dbMaterial && hasAccess(dbMaterial as any));
-
-      if (alreadyOwned) {
-        setStatus("already_owned");
-      }
-    }
-  }, [student, productId, db.purchases, dbMaterial, hasAccess]);
 
   if (!ready || !student) return null;
 
@@ -295,9 +292,61 @@ export default function CheckoutPage() {
   };
 
   // ────────────────────────────────────────────────────────────────────────────
-  // STATE 1: ALREADY OWNED
+  // STATE 0: LOADING ITEM OR CHECKING OWNERSHIP
   // ────────────────────────────────────────────────────────────────────────────
-  if (status === "already_owned") {
+  if (loadingItem || (!fromCart && productId && ownership.state === "loading")) {
+    return (
+      <SiteLayout>
+        <div className="flex min-h-[calc(100vh-14rem)] items-center justify-center px-4 py-16">
+          <div className="w-full max-w-md rounded-3xl border border-border bg-card p-8 sm:p-10 text-center shadow-xl">
+            <Loader2 className="mx-auto size-12 animate-spin text-teal-600" />
+            <h2 className="mt-5 text-xl font-bold text-foreground">Verifying License Status...</h2>
+            <p className="mt-2 text-xs text-muted-foreground leading-relaxed">
+              Checking your student library and verified permissions with Supabase. Please wait a moment.
+            </p>
+          </div>
+        </div>
+      </SiteLayout>
+    );
+  }
+
+  // ────────────────────────────────────────────────────────────────────────────
+  // STATE 0.5: OWNERSHIP CHECK ERROR (A QUERY ERROR MUST NEVER GRANT ACCESS)
+  // ────────────────────────────────────────────────────────────────────────────
+  if (!fromCart && productId && ownership.state === "error") {
+    return (
+      <SiteLayout>
+        <div className="flex min-h-[calc(100vh-14rem)] items-center justify-center px-4 py-16">
+          <div className="w-full max-w-lg rounded-3xl border border-rose-500/20 bg-card p-8 sm:p-10 text-center shadow-xl">
+            <div className="mx-auto flex size-16 items-center justify-center rounded-2xl bg-rose-500/10 text-rose-600">
+              <AlertCircle className="size-10" />
+            </div>
+            <h1 className="mt-5 text-2xl font-extrabold text-foreground">Verification Error</h1>
+            <p className="mt-2 text-xs text-muted-foreground leading-relaxed">
+              {ownership.error || "We could not securely verify your license status due to a network or database issue. Access cannot be granted without verification."}
+            </p>
+            <div className="mt-8 flex flex-col sm:flex-row gap-3">
+              <Button
+                size="lg"
+                onClick={() => ownership.refetch()}
+                className="flex-1 bg-teal-600 hover:bg-teal-700 text-white font-bold"
+              >
+                <RotateCcw className="mr-2 size-4" /> Retry Verification
+              </Button>
+              <Button asChild variant="outline" size="lg">
+                <Link to="/bpharm">Back to Materials</Link>
+              </Button>
+            </div>
+          </div>
+        </div>
+      </SiteLayout>
+    );
+  }
+
+  // ────────────────────────────────────────────────────────────────────────────
+  // STATE 1: ALREADY OWNED / PURCHASED
+  // ────────────────────────────────────────────────────────────────────
+  if ((!fromCart && ownership.state === "purchased") || status === "already_owned") {
     return (
       <SiteLayout>
         <div className="flex min-h-[calc(100vh-14rem)] items-center justify-center px-4 py-16">
@@ -311,18 +360,24 @@ export default function CheckoutPage() {
             </p>
             <div className="mt-8 flex flex-col sm:flex-row gap-3">
               {productId && productType === "material" ? (
-                <Button asChild size="lg" className="flex-1 bg-teal-600 hover:bg-teal-700">
-                  <Link to="/viewer/$materialId" params={{ materialId: productId }}>
+                <Button asChild size="lg" className="flex-1 bg-teal-600 hover:bg-teal-700 text-white font-bold">
+                  <Link
+                    to="/viewer/$studentId/$materialId"
+                    params={{ studentId: student?.id || "student", materialId: productId }}
+                  >
                     <BookOpen className="mr-2 size-4" /> Open in Protected Reader
                   </Link>
                 </Button>
               ) : (
-                <Button asChild size="lg" className="flex-1 bg-teal-600 hover:bg-teal-700">
+                <Button asChild size="lg" className="flex-1 bg-teal-600 hover:bg-teal-700 text-white font-bold">
                   <Link to="/dashboard/my-resources">
                     <BookOpen className="mr-2 size-4" /> Go to My Study Library
                   </Link>
                 </Button>
               )}
+              <Button asChild variant="outline" size="lg">
+                <Link to="/bpharm">Back to Materials</Link>
+              </Button>
             </div>
           </div>
         </div>
