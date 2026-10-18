@@ -329,6 +329,8 @@ export type Database = {
         Row: {
           id: string
           student_id: string
+          student_name: string
+          student_email: string | null
           amount: number
           final_amount: number | null
           discount: number | null
@@ -341,10 +343,17 @@ export type Database = {
           material_ids: string[] | null
           gateway: string | null
           payment_date: string | null
+          razorpay_order_id: string | null
+          total_amount: number | null
+          currency: string | null
+          created_at: string | null
+          updated_at: string | null
         }
         Insert: {
           id?: string
           student_id: string
+          student_name: string
+          student_email?: string | null
           amount: number
           final_amount?: number | null
           discount?: number | null
@@ -357,10 +366,17 @@ export type Database = {
           material_ids?: string[] | null
           gateway?: string | null
           payment_date?: string | null
+          razorpay_order_id?: string | null
+          total_amount?: number | null
+          currency?: string | null
+          created_at?: string | null
+          updated_at?: string | null
         }
         Update: {
           id?: string
           student_id?: string
+          student_name?: string
+          student_email?: string | null
           amount?: number
           final_amount?: number | null
           discount?: number | null
@@ -373,6 +389,11 @@ export type Database = {
           material_ids?: string[] | null
           gateway?: string | null
           payment_date?: string | null
+          razorpay_order_id?: string | null
+          total_amount?: number | null
+          currency?: string | null
+          created_at?: string | null
+          updated_at?: string | null
         }
         Relationships: []
       }
@@ -383,6 +404,9 @@ export type Database = {
           material_id: string
           amount: number | null
           status: string | null
+          payment_status: string | null
+          order_id: string | null
+          purchased_at: string | null
           created_at: string
         }
         Insert: {
@@ -391,6 +415,9 @@ export type Database = {
           material_id: string
           amount?: number | null
           status?: string | null
+          payment_status?: string | null
+          order_id?: string | null
+          purchased_at?: string | null
           created_at?: string
         }
         Update: {
@@ -399,6 +426,9 @@ export type Database = {
           material_id?: string
           amount?: number | null
           status?: string | null
+          payment_status?: string | null
+          order_id?: string | null
+          purchased_at?: string | null
           created_at?: string
         }
         Relationships: []
@@ -454,6 +484,123 @@ export type Database = {
           original_price?: number | null
           created_at?: string
           is_active?: boolean | null
+        }
+        Relationships: []
+      }
+      order_items: {
+        Row: {
+          id: string
+          order_id: string
+          material_id: string | null
+          material_title_snapshot: string
+          unit_price: number
+          quantity: number
+          line_total: number
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          order_id: string
+          material_id?: string | null
+          material_title_snapshot?: string
+          unit_price?: number
+          quantity?: number
+          line_total?: number
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          order_id?: string
+          material_id?: string | null
+          material_title_snapshot?: string
+          unit_price?: number
+          quantity?: number
+          line_total?: number
+          created_at?: string
+        }
+        Relationships: []
+      }
+      payments: {
+        Row: {
+          id: string
+          order_id: string
+          student_id: string
+          gateway: string
+          razorpay_order_id: string
+          razorpay_payment_id: string | null
+          razorpay_signature: string | null
+          amount: number
+          currency: string
+          status: string
+          payment_method: string | null
+          failure_reason: string | null
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          order_id: string
+          student_id: string
+          gateway?: string
+          razorpay_order_id: string
+          razorpay_payment_id?: string | null
+          razorpay_signature?: string | null
+          amount?: number
+          currency?: string
+          status?: string
+          payment_method?: string | null
+          failure_reason?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          order_id?: string
+          student_id?: string
+          gateway?: string
+          razorpay_order_id?: string
+          razorpay_payment_id?: string | null
+          razorpay_signature?: string | null
+          amount?: number
+          currency?: string
+          status?: string
+          payment_method?: string | null
+          failure_reason?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      payment_webhook_events: {
+        Row: {
+          id: string
+          gateway_event_id: string
+          event_type: string
+          processing_status: string
+          payload: Json | null
+          error_message: string | null
+          received_at: string
+          processed_at: string | null
+        }
+        Insert: {
+          id?: string
+          gateway_event_id: string
+          event_type: string
+          processing_status?: string
+          payload?: Json | null
+          error_message?: string | null
+          received_at?: string
+          processed_at?: string | null
+        }
+        Update: {
+          id?: string
+          gateway_event_id?: string
+          event_type?: string
+          processing_status?: string
+          payload?: Json | null
+          error_message?: string | null
+          received_at?: string
+          processed_at?: string | null
         }
         Relationships: []
       }

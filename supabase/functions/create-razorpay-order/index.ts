@@ -32,9 +32,44 @@ serve(async (req: Request) => {
       productType = "material",
       items = [],
       cartItems = [],
+      studentName: clientStudentName,
+      studentEmail: clientStudentEmail,
     } = body;
 
     const supabase = getServiceClient();
+
+    // 2. Fetch authenticated student profile to resolve authoritative name & email
+    const { data: profile } = await supabase
+      .from("profiles")
+      .select("id, full_name, email")
+      .eq("id", user.id)
+      .maybeSingle();
+
+    const resolvedStudentName = (
+      profile?.full_name?.trim() ||
+      user.user_metadata?.full_name?.trim() ||
+      user.user_metadata?.name?.trim() ||
+      (typeof clientStudentName === "string" ? clientStudentName.trim() : "") ||
+      ""
+    );
+
+    const resolvedStudentEmail = (
+      profile?.email?.trim() ||
+      user.email?.trim() ||
+      (typeof clientStudentEmail === "string" ? clientStudentEmail.trim() : "") ||
+      ""
+    );
+
+    // Validate the name before inserting the order. If unavailable, return a clear error instead of inserting null.
+    if (!resolvedStudentName) {
+      return new Response(
+        JSON.stringify({
+          error: "Student name is required to complete this order. Please ensure your profile full name is configured.",
+          code: "MISSING_STUDENT_NAME",
+        }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
 
     // 2. Fetch student's existing purchases to prevent duplicate purchases
     const { data: existingPurchases } = await supabase
@@ -64,6 +99,9 @@ serve(async (req: Request) => {
       price: number;
     }[] = [];
 
+    // Map to hold package ID -> actual constituent material IDs
+    const packageMaterialsMap = new Map<string, string[]>();
+
     let primaryTitle = "";
     let effectiveProductType = productType;
     let effectiveProductId = productId || materialId || packageId || "";
@@ -77,37 +115,78 @@ serve(async (req: Request) => {
         if (!it.id) continue;
 
         if (it.type === "package" || it.type === "semester") {
-          const { data: pkg } = await supabase
+          // Resolve package materials and authoritative price from database
+          const { data: pkg, error: pkgErr } = await supabase
             .from("packages")
             .select("*")
             .eq("id", it.id)
             .maybeSingle();
 
-          const pkgPrice = Number(pkg?.price ?? pkg?.original_price ?? it.price ?? 799);
-          const semNum = pkg?.semester || (it.title?.match(/Semester\s*([1-8])/i)?.[1] ? Number(it.title.match(/Semester\s*([1-8])/i)?.[1]) : null);
+          if (pkgErr || !pkg) {
+            return new Response(
+              JSON.stringify({ error: `Package not found or invalid package ID: ${it.id}` }),
+              { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+            );
+          }
 
+          if (pkg.is_active === false) {
+            return new Response(
+              JSON.stringify({ error: `Package '${it.id}' is currently inactive.` }),
+              { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+            );
+          }
+
+          const rawPrice = pkg.price ?? pkg.original_price;
+          const pkgPrice = typeof rawPrice === "number" ? rawPrice : Number(rawPrice);
+          if (isNaN(pkgPrice) || pkgPrice <= 0) {
+            return new Response(
+              JSON.stringify({ error: `Invalid price configuration for package: ${it.id}` }),
+              { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+            );
+          }
+
+          const semNum = pkg.semester;
+
+          // Get all published materials in this semester using actual database relationships
           let semMatIds: string[] = [];
           if (semNum) {
+            const { data: semSubs } = await supabase
+              .from("subjects")
+              .select("id")
+              .eq("semester", semNum);
+            const semSubIds = (semSubs || []).map((s) => s.id);
+
             const { data: sMats } = await supabase
               .from("materials")
-              .select("id, title")
-              .eq("semester", semNum);
+              .select("id, semester, subject_id, published, status");
+
             if (sMats) {
-              semMatIds = sMats.map((m) => String(m.id));
+              semMatIds = sMats
+                .filter((m: any) =>
+                  (m.semester === semNum || semSubIds.includes(m.subject_id)) &&
+                  m.published !== false &&
+                  m.status !== "Draft"
+                )
+                .map((m) => String(m.id));
             }
           }
 
+          // If no materials owned yet or partially owned
           const unownedInPkg = semMatIds.filter((mId) => !ownedMaterialIds.has(mId));
           if (semMatIds.length > 0 && unownedInPkg.length === 0) {
+            // Already owns everything in this package
             continue;
           }
 
+          packageMaterialsMap.set(it.id, unownedInPkg.length > 0 ? unownedInPkg : semMatIds);
+
           resolvedItems.push({
             materialId: it.id,
-            title: pkg?.type ? `Semester ${semNum} Complete Package` : (it.title || "Semester Bundle"),
+            title: pkg.type ? `Semester ${semNum} Complete Package` : (it.title || `Semester ${semNum} Package`),
             price: pkgPrice,
           });
         } else {
+          // Single study material in cart
           const { data: mat, error: matErr } = await supabase
             .from("materials")
             .select("id, title, price, is_premium, published")
@@ -117,8 +196,9 @@ serve(async (req: Request) => {
           if (matErr || !mat) continue;
           if (mat.published === false) continue;
 
+          // Check duplicate
           if (ownedMaterialIds.has(String(mat.id))) {
-            continue;
+            continue; // Skip already owned item in cart
           }
 
           resolvedItems.push({
@@ -139,38 +219,76 @@ serve(async (req: Request) => {
         );
       }
 
-      primaryTitle = resolvedItems.length === 1 
-        ? resolvedItems[0].title 
+      primaryTitle = resolvedItems.length === 1
+        ? resolvedItems[0].title
         : `${resolvedItems.length} Study Notes Bundle`;
 
     } else if (productType === "package" || productType === "semester" || packageId) {
       // ── SEMESTER PACKAGE / BUNDLE CHECKOUT ────────────────────────────────
       const targetPkgId = packageId || productId;
-      let pkg: any = null;
-
-      if (targetPkgId) {
-        const { data } = await supabase
-          .from("packages")
-          .select("*")
-          .eq("id", targetPkgId)
-          .maybeSingle();
-        pkg = data;
+      if (!targetPkgId) {
+        return new Response(
+          JSON.stringify({ error: "Missing package ID." }),
+          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
       }
 
-      const semNum = pkg?.semester || (body.semester ? Number(body.semester) : null);
-      const pkgPrice = Number(pkg?.price ?? pkg?.original_price ?? body.price ?? 799);
+      const { data: pkg, error: pkgErr } = await supabase
+        .from("packages")
+        .select("*")
+        .eq("id", targetPkgId)
+        .maybeSingle();
 
+      if (pkgErr || !pkg) {
+        return new Response(
+          JSON.stringify({ error: "Package not found or invalid package ID." }),
+          { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      if (pkg.is_active === false) {
+        return new Response(
+          JSON.stringify({ error: "This package is currently inactive." }),
+          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      const rawPrice = pkg.price ?? pkg.original_price;
+      const pkgPrice = typeof rawPrice === "number" ? rawPrice : Number(rawPrice);
+      if (isNaN(pkgPrice) || pkgPrice <= 0) {
+        return new Response(
+          JSON.stringify({ error: "Invalid price configuration for this package in database." }),
+          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      const semNum = pkg.semester;
+
+      // Fetch all published materials in this semester using actual database relationships
       let semMatIds: string[] = [];
       if (semNum) {
+        const { data: semSubs } = await supabase
+          .from("subjects")
+          .select("id")
+          .eq("semester", semNum);
+        const semSubIds = (semSubs || []).map((s) => s.id);
+
         const { data: sMats } = await supabase
           .from("materials")
-          .select("id, title")
-          .eq("semester", semNum);
+          .select("id, semester, subject_id, published, status");
+
         if (sMats) {
-          semMatIds = sMats.map((m) => String(m.id));
+          semMatIds = sMats
+            .filter((m: any) =>
+              (m.semester === semNum || semSubIds.includes(m.subject_id)) &&
+              m.published !== false &&
+              m.status !== "Draft"
+            )
+            .map((m) => String(m.id));
         }
       }
 
+      // Check if student already owns all materials in this package
       if (semMatIds.length > 0) {
         const unownedInPkg = semMatIds.filter((mId) => !ownedMaterialIds.has(mId));
         if (unownedInPkg.length === 0) {
@@ -182,10 +300,13 @@ serve(async (req: Request) => {
             { status: 409, headers: { ...corsHeaders, "Content-Type": "application/json" } }
           );
         }
+        packageMaterialsMap.set(String(targetPkgId), unownedInPkg);
+      } else {
+        packageMaterialsMap.set(String(targetPkgId), []);
       }
 
-      primaryTitle = pkg?.type ? `Semester ${semNum} Complete Package` : `Semester ${semNum || ""} Package`;
-      effectiveProductId = String(targetPkgId || `sem_${semNum}`);
+      primaryTitle = pkg.type ? `Semester ${semNum} Complete Package` : `Semester ${semNum || ""} Package`;
+      effectiveProductId = String(targetPkgId);
       effectiveProductType = "package";
 
       resolvedItems.push({
@@ -204,6 +325,7 @@ serve(async (req: Request) => {
         );
       }
 
+      // Authoritative database check
       const { data: material, error: matErr } = await supabase
         .from("materials")
         .select("id, title, price, is_premium, published")
@@ -224,6 +346,7 @@ serve(async (req: Request) => {
         );
       }
 
+      // Already owned validation
       if (ownedMaterialIds.has(String(material.id))) {
         return new Response(
           JSON.stringify({
@@ -240,9 +363,11 @@ serve(async (req: Request) => {
       // Handle Free Material
       if (!material.is_premium || price <= 0) {
         const freeOrderId = `ord_free_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-        await supabase.from("orders").insert({
+        const { error: freeOrderErr } = await supabase.from("orders").insert({
           id: freeOrderId,
           student_id: user.id,
+          student_name: resolvedStudentName,
+          student_email: resolvedStudentEmail || null,
           amount: 0,
           final_amount: 0,
           total_amount: 0,
@@ -257,7 +382,15 @@ serve(async (req: Request) => {
           payment_date: new Date().toISOString(),
         });
 
-        await supabase.from("purchases").upsert({
+        if (freeOrderErr) {
+          console.error("Free order insert failed:", freeOrderErr);
+          return new Response(
+            JSON.stringify({ error: "Failed to record free order in database." }),
+            { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          );
+        }
+
+        const { error: freePurErr } = await supabase.from("purchases").upsert({
           id: `pur_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
           student_id: user.id,
           material_id: String(material.id),
@@ -268,6 +401,14 @@ serve(async (req: Request) => {
           purchased_at: new Date().toISOString(),
           created_at: new Date().toISOString(),
         }, { onConflict: "student_id,material_id" });
+
+        if (freePurErr) {
+          console.error("Free purchase record failed:", freePurErr);
+          return new Response(
+            JSON.stringify({ error: "Failed to unlock free material in database." }),
+            { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          );
+        }
 
         return new Response(
           JSON.stringify({
@@ -304,12 +445,25 @@ serve(async (req: Request) => {
 
     const amountInPaise = Math.round(totalRupees * 100);
     const internalOrderId = `ord_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-    const materialIdsToStore = resolvedItems.map((it) => it.materialId);
+
+    // Resolve material IDs to store in order: packages expand to their included materials
+    const materialIdsSet = new Set<string>();
+    for (const it of resolvedItems) {
+      if (packageMaterialsMap.has(it.materialId)) {
+        const mIds = packageMaterialsMap.get(it.materialId) || [];
+        for (const mid of mIds) materialIdsSet.add(mid);
+      } else {
+        materialIdsSet.add(it.materialId);
+      }
+    }
+    const materialIdsToStore = Array.from(materialIdsSet);
 
     // 5. Create Pending Internal Order in Database
     const { error: orderInsertErr } = await supabase.from("orders").insert({
       id: internalOrderId,
       student_id: user.id,
+      student_name: resolvedStudentName,
+      student_email: resolvedStudentEmail || null,
       amount: totalRupees,
       discount: 0,
       final_amount: totalRupees,
@@ -334,10 +488,10 @@ serve(async (req: Request) => {
       );
     }
 
-    // 6. Insert Order Items snapshots
+    // 6. Insert Order Items snapshots (packages have material_id = null so package IDs are never treated as material IDs)
     const orderItemsRows = resolvedItems.map((it) => ({
       order_id: internalOrderId,
-      material_id: it.materialId,
+      material_id: packageMaterialsMap.has(it.materialId) ? null : it.materialId,
       material_title_snapshot: it.title,
       unit_price: Math.round(it.price * 100),
       quantity: 1,
@@ -349,8 +503,19 @@ serve(async (req: Request) => {
       console.warn("order_items insert warning:", e?.message);
     });
 
-    // 7. Create Razorpay Server Order via REST API
-    const { keyId } = getRazorpayCredentials();
+    // 7. Verify Razorpay Server Credentials & Create Razorpay Server Order
+    const { keyId, keySecret } = getRazorpayCredentials();
+
+    if (!keyId || !keySecret) {
+      console.error("Missing server Razorpay credentials (RAZORPAY_KEY_ID or RAZORPAY_KEY_SECRET)");
+      return new Response(
+        JSON.stringify({
+          error: "Payment gateway credentials are not configured on the server. Please set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET in Supabase secrets.",
+        }),
+        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
     let razorpayOrder;
 
     try {
@@ -361,6 +526,8 @@ serve(async (req: Request) => {
         notes: {
           internal_order_id: internalOrderId,
           student_id: user.id,
+          student_name: resolvedStudentName.slice(0, 40),
+          student_email: resolvedStudentEmail.slice(0, 40),
           product_title: primaryTitle.slice(0, 40),
           product_type: effectiveProductType,
         },
@@ -368,10 +535,15 @@ serve(async (req: Request) => {
     } catch (rzpErr: any) {
       console.error("Razorpay order creation failed:", rzpErr);
 
-      await supabase
+      // Mark order as failed
+      const { error: updateFailedErr } = await supabase
         .from("orders")
         .update({ status: "Failed", updated_at: new Date().toISOString() })
         .eq("id", internalOrderId);
+
+      if (updateFailedErr) {
+        console.error("Failed to update order status to Failed:", updateFailedErr);
+      }
 
       return new Response(
         JSON.stringify({ error: rzpErr.message || "Failed to initialize Razorpay checkout order." }),
@@ -380,7 +552,7 @@ serve(async (req: Request) => {
     }
 
     // 8. Update Order with Razorpay Order ID & Insert Initial Payment Record
-    await supabase
+    const { error: orderUpdateErr } = await supabase
       .from("orders")
       .update({
         razorpay_order_id: razorpayOrder.id,
@@ -388,7 +560,15 @@ serve(async (req: Request) => {
       })
       .eq("id", internalOrderId);
 
-    await supabase.from("payments").insert({
+    if (orderUpdateErr) {
+      console.error("Failed to update order with razorpay_order_id:", orderUpdateErr);
+      return new Response(
+        JSON.stringify({ error: "Failed to update internal order with payment gateway order ID." }),
+        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    const { error: paymentInsertErr } = await supabase.from("payments").insert({
       order_id: internalOrderId,
       student_id: user.id,
       gateway: "razorpay",
@@ -398,9 +578,13 @@ serve(async (req: Request) => {
       status: "created",
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
-    }).catch((e: any) => console.warn("Initial payment record notice:", e?.message));
+    });
 
-    // 9. Return Public Checkout Details to Frontend
+    if (paymentInsertErr) {
+      console.warn("Initial payment record notice:", paymentInsertErr);
+    }
+
+    // 9. Return Public Checkout Details to Frontend (Authoritative Real Key ID only)
     return new Response(
       JSON.stringify({
         ok: true,
@@ -411,12 +595,12 @@ serve(async (req: Request) => {
         amountInRupees: totalRupees,
         currency: "INR",
         productTitle: primaryTitle,
-        keyId: keyId || "rzp_test_placeholder_key",
+        keyId: keyId,
       }),
       { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   } catch (err: any) {
-    console.error("Unhandled error in create-razorpay-order:", err);
+    console.error("Unhandled error in create-order:", err);
     return new Response(
       JSON.stringify({ error: err?.message || "Internal server error." }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }

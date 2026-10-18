@@ -26,7 +26,7 @@ BEGIN
 
   -- 2. Check admin role in profiles table
   IF EXISTS (
-    SELECT 1 FROM public.profiles 
+    SELECT 1 FROM public.profiles
     WHERE id = auth.uid() AND role = 'admin'
   ) THEN
     RETURN TRUE;
@@ -34,7 +34,7 @@ BEGIN
 
   -- 3. Check admins table
   IF EXISTS (
-    SELECT 1 FROM public.admins 
+    SELECT 1 FROM public.admins
     WHERE id = auth.uid() OR email = (auth.jwt() ->> 'email')
   ) THEN
     RETURN TRUE;
@@ -50,35 +50,49 @@ $$;
 DO $$
 BEGIN
   IF NOT EXISTS (
-    SELECT 1 FROM information_schema.columns 
+    SELECT 1 FROM information_schema.columns
     WHERE table_schema = 'public' AND table_name = 'orders' AND column_name = 'total_amount'
   ) THEN
     ALTER TABLE public.orders ADD COLUMN total_amount INTEGER; -- Amount in paise
   END IF;
 
   IF NOT EXISTS (
-    SELECT 1 FROM information_schema.columns 
+    SELECT 1 FROM information_schema.columns
     WHERE table_schema = 'public' AND table_name = 'orders' AND column_name = 'currency'
   ) THEN
     ALTER TABLE public.orders ADD COLUMN currency VARCHAR(10) DEFAULT 'INR';
   END IF;
 
   IF NOT EXISTS (
-    SELECT 1 FROM information_schema.columns 
+    SELECT 1 FROM information_schema.columns
     WHERE table_schema = 'public' AND table_name = 'orders' AND column_name = 'razorpay_order_id'
   ) THEN
     ALTER TABLE public.orders ADD COLUMN razorpay_order_id TEXT;
   END IF;
 
   IF NOT EXISTS (
-    SELECT 1 FROM information_schema.columns 
+    SELECT 1 FROM information_schema.columns
     WHERE table_schema = 'public' AND table_name = 'orders' AND column_name = 'created_at'
   ) THEN
     ALTER TABLE public.orders ADD COLUMN created_at TIMESTAMPTZ DEFAULT NOW();
   END IF;
 
   IF NOT EXISTS (
-    SELECT 1 FROM information_schema.columns 
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'orders' AND column_name = 'student_name'
+  ) THEN
+    ALTER TABLE public.orders ADD COLUMN student_name TEXT;
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'orders' AND column_name = 'student_email'
+  ) THEN
+    ALTER TABLE public.orders ADD COLUMN student_email TEXT;
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
     WHERE table_schema = 'public' AND table_name = 'orders' AND column_name = 'updated_at'
   ) THEN
     ALTER TABLE public.orders ADD COLUMN updated_at TIMESTAMPTZ DEFAULT NOW();
@@ -116,10 +130,10 @@ CREATE TABLE IF NOT EXISTS public.order_items (
 DO $$
 BEGIN
   IF EXISTS (
-    SELECT 1 FROM information_schema.columns 
-    WHERE table_schema = 'public' 
-      AND table_name = 'order_items' 
-      AND column_name = 'material_id' 
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name = 'order_items'
+      AND column_name = 'material_id'
       AND data_type <> 'text'
   ) THEN
     ALTER TABLE public.order_items ALTER COLUMN material_id TYPE TEXT USING material_id::TEXT;
@@ -152,7 +166,7 @@ CREATE TABLE IF NOT EXISTS public.payments (
 
 CREATE INDEX IF NOT EXISTS payments_order_id_idx ON public.payments (order_id);
 CREATE INDEX IF NOT EXISTS payments_student_id_idx ON public.payments (student_id);
-CREATE INDEX IF NOT EXISTS payments_razorpay_order_id_idx ON public.payments (razorpay_order_id);
+CREATE UNIQUE INDEX IF NOT EXISTS payments_razorpay_order_id_idx ON public.payments (razorpay_order_id);
 CREATE INDEX IF NOT EXISTS payments_razorpay_payment_id_idx ON public.payments (razorpay_payment_id);
 
 -- ─────────────────────────────────────────────────────────────────────────────
@@ -161,21 +175,21 @@ CREATE INDEX IF NOT EXISTS payments_razorpay_payment_id_idx ON public.payments (
 DO $$
 BEGIN
   IF NOT EXISTS (
-    SELECT 1 FROM information_schema.columns 
+    SELECT 1 FROM information_schema.columns
     WHERE table_schema = 'public' AND table_name = 'purchases' AND column_name = 'order_id'
   ) THEN
     ALTER TABLE public.purchases ADD COLUMN order_id TEXT;
   END IF;
 
   IF NOT EXISTS (
-    SELECT 1 FROM information_schema.columns 
+    SELECT 1 FROM information_schema.columns
     WHERE table_schema = 'public' AND table_name = 'purchases' AND column_name = 'payment_status'
   ) THEN
     ALTER TABLE public.purchases ADD COLUMN payment_status TEXT DEFAULT 'paid' CHECK (payment_status IN ('paid', 'free'));
   END IF;
 
   IF NOT EXISTS (
-    SELECT 1 FROM information_schema.columns 
+    SELECT 1 FROM information_schema.columns
     WHERE table_schema = 'public' AND table_name = 'purchases' AND column_name = 'purchased_at'
   ) THEN
     ALTER TABLE public.purchases ADD COLUMN purchased_at TIMESTAMPTZ DEFAULT NOW();
@@ -183,7 +197,7 @@ BEGIN
 END $$;
 
 -- Ensure default generator on purchases.id so inserting without an ID never fails
-ALTER TABLE public.purchases 
+ALTER TABLE public.purchases
   ALTER COLUMN id SET DEFAULT ('pur_' || substr(md5(random()::text || clock_timestamp()::text), 1, 16));
 
 -- Ensure unique constraint on (student_id, material_id) to prevent duplicate licenses
@@ -236,16 +250,20 @@ SECURITY DEFINER
 SET search_path = public
 AS $$
 DECLARE
-  v_order RECORD;
-  v_mat_id TEXT;
-  v_granted_count INT := 0;
-  v_sem INT := NULL;
-  v_has_packages BOOLEAN := FALSE;
-  v_pkg_mat_ids TEXT[];
+  v_order                 RECORD;
+  v_resolved_rzp_order_id TEXT;
+  v_payment_by_rzp        public.payments%ROWTYPE;
+  v_payment_by_order      public.payments%ROWTYPE;
+  v_target_pay_id         UUID := NULL;
+  v_already_paid          BOOLEAN := FALSE;
+  v_mat_id                TEXT;
+  v_granted_count         INT := 0;
+  v_sem                   INT := NULL;
+  v_has_packages          BOOLEAN := FALSE;
 BEGIN
   -- 1. Security Check: Restrict invocation to trusted backend (service_role or admin)
   --    Regular students cannot call this RPC directly from the browser.
-  IF auth.role() = 'authenticated' AND NOT public.is_pharma_admin() THEN
+  IF auth.role() IS NOT NULL AND auth.role() <> 'service_role' AND NOT public.is_pharma_admin() THEN
     RETURN jsonb_build_object(
       'success', false,
       'error', 'Access denied. Order confirmation must be performed by secure backend verification.'
@@ -253,11 +271,11 @@ BEGIN
   END IF;
 
   -- 2. Validate essential payment parameters
-  IF p_order_id IS NULL OR p_order_id = '' THEN
+  IF p_order_id IS NULL OR trim(p_order_id) = '' THEN
     RETURN jsonb_build_object('success', false, 'error', 'Missing internal order ID.');
   END IF;
 
-  IF p_razorpay_payment_id IS NULL OR p_razorpay_payment_id = '' THEN
+  IF p_razorpay_payment_id IS NULL OR trim(p_razorpay_payment_id) = '' THEN
     RETURN jsonb_build_object('success', false, 'error', 'Missing verified Razorpay payment ID.');
   END IF;
 
@@ -271,82 +289,142 @@ BEGIN
     RETURN jsonb_build_object('success', false, 'error', 'Order not found: ' || p_order_id);
   END IF;
 
-  -- 4. Verify Razorpay Order ID matches if both are set
-  IF p_razorpay_order_id IS NOT NULL 
-     AND v_order.razorpay_order_id IS NOT NULL 
-     AND v_order.razorpay_order_id <> '' 
-     AND v_order.razorpay_order_id <> p_razorpay_order_id THEN
-    RETURN jsonb_build_object(
-      'success', false, 
-      'error', 'Order ID mismatch between gateway and database records.'
-    );
-  END IF;
-
-  -- 5. Idempotency check: If already marked Paid, return immediately without duplicate work
-  IF v_order.status = 'Paid' OR v_order.status = 'paid' THEN
-    RETURN jsonb_build_object(
-      'success', true,
-      'already_processed', true,
-      'order_id', p_order_id,
-      'message', 'Order was already verified and confirmed as Paid.'
-    );
-  END IF;
-
-  -- 6. Reject confirmation if order was previously Cancelled or Refunded
-  IF v_order.status IN ('Cancelled', 'Refunded') THEN
+  -- 4. Reject confirmation if order was previously Cancelled or Refunded
+  IF v_order.status IN ('Cancelled', 'Refunded', 'cancelled', 'refunded') THEN
     RETURN jsonb_build_object(
       'success', false,
       'error', 'Cannot confirm order with status: ' || v_order.status
     );
   END IF;
 
+  -- 5. Verify Razorpay Order ID consistency if supplied
+  IF p_razorpay_order_id IS NOT NULL
+     AND trim(p_razorpay_order_id) <> ''
+     AND v_order.razorpay_order_id IS NOT NULL
+     AND trim(v_order.razorpay_order_id) <> ''
+     AND v_order.razorpay_order_id <> p_razorpay_order_id THEN
+    RETURN jsonb_build_object(
+      'success', false,
+      'error', 'Order ID mismatch between gateway and database records.'
+    );
+  END IF;
+
+  -- Prevent payment ID reuse across different internal orders
+  IF EXISTS (
+    SELECT 1 FROM public.payments
+    WHERE razorpay_payment_id = p_razorpay_payment_id
+      AND order_id <> p_order_id
+  ) THEN
+    RETURN jsonb_build_object(
+      'success', false,
+      'error', 'Razorpay payment ID ' || p_razorpay_payment_id || ' is already linked to another order.'
+    );
+  END IF;
+
+  v_resolved_rzp_order_id := COALESCE(NULLIF(trim(p_razorpay_order_id), ''), NULLIF(trim(v_order.razorpay_order_id), ''));
+
+  -- 6. Precise Payment Row Resolution and Reconciliation (Prevent updating multiple rows accidentally)
+  --    Query existing payments by razorpay_order_id and internal order_id
+  IF v_resolved_rzp_order_id IS NOT NULL AND v_resolved_rzp_order_id <> '' THEN
+    SELECT * INTO v_payment_by_rzp
+    FROM public.payments
+    WHERE razorpay_order_id = v_resolved_rzp_order_id
+    FOR UPDATE;
+  END IF;
+
+  SELECT * INTO v_payment_by_order
+  FROM public.payments
+  WHERE order_id = p_order_id
+  FOR UPDATE;
+
+  -- Fail safely if razorpay_order_id and internal order_id resolve to two conflicting payment rows
+  IF v_payment_by_rzp.id IS NOT NULL
+     AND v_payment_by_order.id IS NOT NULL
+     AND v_payment_by_rzp.id <> v_payment_by_order.id THEN
+    RETURN jsonb_build_object(
+      'success', false,
+      'error', 'Data inconsistency: razorpay_order_id and order_id resolve to separate payment records.'
+    );
+  END IF;
+
+  IF v_payment_by_rzp.id IS NOT NULL THEN
+    v_target_pay_id := v_payment_by_rzp.id;
+  ELSIF v_payment_by_order.id IS NOT NULL THEN
+    v_target_pay_id := v_payment_by_order.id;
+  END IF;
+
+  IF v_target_pay_id IS NOT NULL THEN
+    -- Update EXACTLY the single target payment row identified by primary key
+    UPDATE public.payments
+    SET
+      order_id            = p_order_id,
+      razorpay_order_id   = COALESCE(NULLIF(v_resolved_rzp_order_id, ''), razorpay_order_id),
+      razorpay_payment_id = p_razorpay_payment_id,
+      razorpay_signature  = COALESCE(p_razorpay_signature, razorpay_signature),
+      amount              = COALESCE(NULLIF(payments.amount, 0), v_order.total_amount, (COALESCE(v_order.final_amount, v_order.amount, 0) * 100)::INT, 0),
+      currency            = COALESCE(payments.currency, v_order.currency, 'INR'),
+      status              = 'captured',
+      payment_method      = COALESCE(p_payment_method, payment_method, 'online'),
+      updated_at          = NOW()
+    WHERE id = v_target_pay_id;
+  ELSE
+    -- No existing row found: insert new payment record idempotently
+    INSERT INTO public.payments (
+      order_id,
+      student_id,
+      gateway,
+      razorpay_order_id,
+      razorpay_payment_id,
+      razorpay_signature,
+      amount,
+      currency,
+      status,
+      payment_method,
+      updated_at
+    )
+    VALUES (
+      p_order_id,
+      v_order.student_id,
+      'razorpay',
+      COALESCE(v_resolved_rzp_order_id, 'ord_' || p_order_id),
+      p_razorpay_payment_id,
+      p_razorpay_signature,
+      COALESCE(v_order.total_amount, (COALESCE(v_order.final_amount, v_order.amount, 0) * 100)::INT, 0),
+      COALESCE(v_order.currency, 'INR'),
+      'captured',
+      COALESCE(p_payment_method, 'online'),
+      NOW()
+    )
+    ON CONFLICT (razorpay_order_id) DO UPDATE
+    SET
+      order_id            = EXCLUDED.order_id,
+      razorpay_payment_id = EXCLUDED.razorpay_payment_id,
+      razorpay_signature  = COALESCE(EXCLUDED.razorpay_signature, payments.razorpay_signature),
+      amount              = CASE WHEN payments.amount > 0 THEN payments.amount ELSE EXCLUDED.amount END,
+      status              = 'captured',
+      payment_method      = COALESCE(EXCLUDED.payment_method, payments.payment_method, 'online'),
+      updated_at          = NOW();
+  END IF;
+
   -- 7. Update order status to Paid (Preserving exact casing constraint: 'Paid')
-  UPDATE public.orders
-  SET
-    status = 'Paid',
-    transaction_id = p_razorpay_payment_id,
-    payment_date = NOW(),
-    updated_at = NOW()
-  WHERE id = p_order_id;
+  v_already_paid := (v_order.status = 'Paid' OR v_order.status = 'paid');
 
-  -- 8. Upsert verified payment record into payments table
-  INSERT INTO public.payments (
-    order_id,
-    student_id,
-    gateway,
-    razorpay_order_id,
-    razorpay_payment_id,
-    razorpay_signature,
-    amount,
-    currency,
-    status,
-    payment_method,
-    updated_at
-  )
-  VALUES (
-    p_order_id,
-    v_order.student_id,
-    'razorpay',
-    COALESCE(p_razorpay_order_id, v_order.razorpay_order_id, ''),
-    p_razorpay_payment_id,
-    p_razorpay_signature,
-    COALESCE(v_order.total_amount, (v_order.amount * 100)::INT, 0),
-    COALESCE(v_order.currency, 'INR'),
-    'captured',
-    p_payment_method,
-    NOW()
-  )
-  ON CONFLICT (razorpay_payment_id) DO UPDATE
-  SET
-    status = 'captured',
-    payment_method = COALESCE(EXCLUDED.payment_method, payments.payment_method),
-    updated_at = NOW();
+  IF NOT v_already_paid THEN
+    UPDATE public.orders
+    SET
+      status             = 'Paid',
+      razorpay_order_id  = COALESCE(orders.razorpay_order_id, v_resolved_rzp_order_id),
+      transaction_id     = p_razorpay_payment_id,
+      payment_date       = COALESCE(v_order.payment_date, NOW()),
+      updated_at         = NOW()
+    WHERE id = p_order_id;
+  END IF;
 
-  -- 9. Grant Material Purchases (Strictly for included materials)
+  -- 8. Grant Material Purchases (Strictly for included materials, without swallowing errors)
 
-  -- Source A: order_items table (Cart and verified item snapshots)
+  -- Source A: order_items table (Cart and verified item snapshots; packages have material_id = NULL)
   FOR v_mat_id IN
-    SELECT material_id FROM public.order_items 
+    SELECT material_id FROM public.order_items
     WHERE order_id = p_order_id AND material_id IS NOT NULL AND material_id <> ''
   LOOP
     INSERT INTO public.purchases (
@@ -373,18 +451,18 @@ BEGIN
     )
     ON CONFLICT (student_id, material_id) DO UPDATE
     SET
-      status = 'unlocked',
+      status         = 'unlocked',
       payment_status = 'paid',
-      order_id = EXCLUDED.order_id;
+      order_id       = EXCLUDED.order_id;
 
     v_granted_count := v_granted_count + 1;
   END LOOP;
 
-  -- Source B: orders.material_ids (If stored as JSONB array)
+  -- Source B: orders.material_ids (Robust array/json unnesting without silent exception swallow)
   IF v_order.material_ids IS NOT NULL THEN
-    BEGIN
+    IF jsonb_typeof(to_jsonb(v_order.material_ids)) = 'array' THEN
       FOR v_mat_id IN
-        SELECT jsonb_array_elements_text(v_order.material_ids::jsonb)
+        SELECT jsonb_array_elements_text(to_jsonb(v_order.material_ids))
       LOOP
         IF v_mat_id IS NOT NULL AND v_mat_id <> '' THEN
           INSERT INTO public.purchases (
@@ -411,23 +489,22 @@ BEGIN
           )
           ON CONFLICT (student_id, material_id) DO UPDATE
           SET
-            status = 'unlocked',
+            status         = 'unlocked',
             payment_status = 'paid',
-            order_id = EXCLUDED.order_id;
+            order_id       = EXCLUDED.order_id;
 
           v_granted_count := v_granted_count + 1;
         END IF;
       END LOOP;
-    EXCEPTION WHEN OTHERS THEN
-      NULL; -- Continue gracefully if material_ids is in another format
-    END;
+    END IF;
   END IF;
 
-  -- Source C: Single material purchase (if product_type is material and product_id is specified)
-  IF (v_order.product_type = 'material' OR v_order.product_type IS NULL) 
-     AND v_order.product_id IS NOT NULL 
-     AND v_order.product_id <> '' 
-     AND v_order.product_id <> 'cart' THEN
+  -- Source C: Single material purchase (only if product_id exists in materials table)
+  IF (v_order.product_type = 'material' OR v_order.product_type IS NULL)
+     AND v_order.product_id IS NOT NULL
+     AND v_order.product_id <> ''
+     AND v_order.product_id <> 'cart'
+     AND EXISTS (SELECT 1 FROM public.materials WHERE id = v_order.product_id) THEN
     INSERT INTO public.purchases (
       id,
       student_id,
@@ -452,9 +529,9 @@ BEGIN
     )
     ON CONFLICT (student_id, material_id) DO UPDATE
     SET
-      status = 'unlocked',
+      status         = 'unlocked',
       payment_status = 'paid',
-      order_id = EXCLUDED.order_id;
+      order_id       = EXCLUDED.order_id;
 
     v_granted_count := v_granted_count + 1;
   END IF;
@@ -465,13 +542,9 @@ BEGIN
     v_has_packages := (to_regclass('public.packages') IS NOT NULL);
 
     IF v_has_packages THEN
-      BEGIN
-        EXECUTE 'SELECT semester FROM public.packages WHERE id = $1'
-          INTO v_sem
-          USING v_order.product_id;
-      EXCEPTION WHEN OTHERS THEN
-        v_sem := NULL;
-      END;
+      EXECUTE 'SELECT semester FROM public.packages WHERE id = $1'
+        INTO v_sem
+        USING v_order.product_id;
     END IF;
 
     -- If semester could not be deduced from packages table, parse from product_title
@@ -482,9 +555,11 @@ BEGIN
     -- Grant materials belonging strictly to that semester
     IF v_sem IS NOT NULL THEN
       FOR v_mat_id IN
-        SELECT id FROM public.materials 
-        WHERE semester = v_sem 
-          AND (published IS TRUE OR published IS NULL)
+        SELECT m.id FROM public.materials m
+        LEFT JOIN public.subjects s ON m.subject_id = s.id
+        WHERE (m.semester = v_sem OR s.semester = v_sem)
+          AND (m.published IS TRUE OR m.published IS NULL)
+          AND (m.status IS NULL OR m.status <> 'Draft')
       LOOP
         INSERT INTO public.purchases (
           id,
@@ -510,9 +585,9 @@ BEGIN
         )
         ON CONFLICT (student_id, material_id) DO UPDATE
         SET
-          status = 'unlocked',
+          status         = 'unlocked',
           payment_status = 'paid',
-          order_id = EXCLUDED.order_id;
+          order_id       = EXCLUDED.order_id;
 
         v_granted_count := v_granted_count + 1;
       END LOOP;
@@ -523,6 +598,7 @@ BEGIN
     'success', true,
     'order_id', p_order_id,
     'razorpay_payment_id', p_razorpay_payment_id,
+    'already_paid', v_already_paid,
     'materials_granted', v_granted_count
   );
 END;

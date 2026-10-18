@@ -53,11 +53,12 @@ export async function checkMaterialOwnership(
         };
       }
 
-      if (orders && orders.length > 0) {
+      const firstOrder = orders?.[0];
+      if (firstOrder) {
         return {
           state: "purchased",
-          orderId: orders[0].id,
-          purchasedAt: orders[0].payment_date || orders[0].order_date,
+          orderId: firstOrder.id,
+          purchasedAt: firstOrder.payment_date || firstOrder.order_date,
         };
       }
 

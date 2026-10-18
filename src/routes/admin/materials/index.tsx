@@ -1,5 +1,5 @@
-import { createFileRoute } from "@tanstack/react-router";
-import { useEffect, useState, useMemo } from "react";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { useEffect, useState, useMemo, useRef } from "react";
 import { AdminLayout } from "@/components/admin/AdminLayout";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -42,6 +42,10 @@ import {
   X,
   File,
   CheckCircle2,
+  Settings2,
+  XCircle,
+  Link as LinkIcon,
+  ShieldCheck,
 } from "lucide-react";
 
 export const Route = createFileRoute("/admin/materials/")({
@@ -130,6 +134,13 @@ export default function MaterialManagementPage() {
   const [matFormWatermark, setMatFormWatermark] = useState(true);
   const [matFormVisibleTo, setMatFormVisibleTo] = useState("all");
   const [matFormSubmitting, setMatFormSubmitting] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<number>(0);
+  const [uploadStatus, setUploadStatus] = useState<"idle" | "uploading" | "saving" | "complete">("idle");
+  const [uploadedBytes, setUploadedBytes] = useState<number>(0);
+  const [totalBytes, setTotalBytes] = useState<number>(0);
+  const [showAccessSettingsModal, setShowAccessSettingsModal] = useState<boolean>(false);
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const navigate = useNavigate();
 
   // Modals: Details & Preview
   const [detailsMaterial, setDetailsMaterial] = useState<MaterialItem | null>(null);
@@ -411,23 +422,29 @@ export default function MaterialManagementPage() {
     }
   };
 
-  // Helper to open document using secure signed URL
-  const handleOpenDocument = async (mat: MaterialItem) => {
-    try {
-      toast.loading("Generating secure access link...", { id: "open-doc" });
-      const res = await AcademicService.getMaterialAccess(mat.id, { role: "admin" });
-      if (res.error || !res.url) {
-        toast.error(res.error || "Failed to access document.", { id: "open-doc" });
-        return;
-      }
-      toast.success("Document link generated.", { id: "open-doc" });
-      window.open(res.url, "_blank");
-    } catch (err: any) {
-      toast.error(err?.message || "Failed to open document.", { id: "open-doc" });
-    }
+  // Helper to open document using in-app protected document viewer
+  const handleOpenDocument = (mat: MaterialItem) => {
+    void navigate({
+      to: "/viewer/$materialId",
+      params: { materialId: mat.id },
+    });
   };
 
-  // 6. Submit Material (Add or Edit with Supabase Storage PDF upload)
+  // Cancel in-progress upload and abort network request immediately
+  const handleCancelUpload = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    setMatFormSubmitting(false);
+    setUploadStatus("idle");
+    setUploadProgress(0);
+    setUploadedBytes(0);
+    setTotalBytes(0);
+    toast.info("File upload cancelled.");
+  };
+
+  // 6. Submit Material (Add or Edit with Supabase Storage PDF upload & real-time progress %)
   const handleSaveMaterial = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!matFormTitle.trim()) {
@@ -446,7 +463,7 @@ export default function MaterialManagementPage() {
     }
 
     if (!editingMaterial && !matFormFile && !matFormDriveUrl.trim()) {
-      toast.error("Please select a PDF file to upload.");
+      toast.error("Please select a PDF file to upload or enter a Google Drive link.");
       return;
     }
 
@@ -464,7 +481,20 @@ export default function MaterialManagementPage() {
       }
     }
 
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
     setMatFormSubmitting(true);
+    if (matFormFile) {
+      setUploadStatus("uploading");
+      setUploadProgress(1);
+      setUploadedBytes(0);
+      setTotalBytes(matFormFile.size);
+    } else {
+      setUploadStatus("saving");
+      setUploadProgress(100);
+    }
+
     try {
       const semNum = currentSemester?.semester_number || 1;
       const semYear = Math.ceil(semNum / 2) || 1;
@@ -483,6 +513,13 @@ export default function MaterialManagementPage() {
           allow_print: matFormAllowPrint,
           add_watermark: matFormWatermark,
           visible_to: matFormVisibleTo,
+          onProgress: (pct, loaded, total) => {
+            setUploadProgress(pct);
+            setUploadedBytes(loaded);
+            setTotalBytes(total);
+            if (pct >= 100) setUploadStatus("saving");
+          },
+          abortSignal: controller.signal,
         });
         if (!res.success) throw new Error(res.error);
 
@@ -505,7 +542,7 @@ export default function MaterialManagementPage() {
         );
         toast.success(`Study material "${matFormTitle.trim()}" updated successfully.`);
       } else {
-        // Create new material with real Supabase Storage upload
+        // Create new material with Supabase Storage upload
         const createdMat = await AcademicService.addMaterial({
           course_id: selectedCourseId || undefined,
           semester_id: selectedSemesterId || undefined,
@@ -525,6 +562,13 @@ export default function MaterialManagementPage() {
           allow_print: matFormAllowPrint,
           add_watermark: matFormWatermark,
           visible_to: matFormVisibleTo,
+          onProgress: (pct, loaded, total) => {
+            setUploadProgress(pct);
+            setUploadedBytes(loaded);
+            setTotalBytes(total);
+            if (pct >= 100) setUploadStatus("saving");
+          },
+          abortSignal: controller.signal,
         });
 
         setMaterials((prev) => [createdMat, ...prev]);
@@ -534,12 +578,20 @@ export default function MaterialManagementPage() {
       // Reset & go back
       setEditingMaterial(null);
       setMatFormFile(null);
+      setUploadProgress(0);
+      setUploadStatus("idle");
       setView("semester");
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Failed to save material.";
-      toast.error(msg);
+      if ((err as any)?.name === "AbortError") {
+        toast.info("Upload cancelled.");
+      } else {
+        const msg = err instanceof Error ? err.message : "Failed to save material.";
+        toast.error(msg);
+      }
     } finally {
       setMatFormSubmitting(false);
+      setUploadStatus("idle");
+      abortControllerRef.current = null;
     }
   };
 
@@ -933,221 +985,327 @@ export default function MaterialManagementPage() {
         subtitle={`Create study material for ${currentCourse?.name || "B.Pharm"} - ${currentSemester?.title || "Semester 1"}`}
       >
         <div className="space-y-6">
-          <div className="flex items-center gap-2">
+          {/* Top Bar: Back Button, Compact Course/Semester Info, and Access & Settings Icon Popup Button */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-2 border-b border-border/60">
+            <div className="flex items-center gap-3">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  if (uploadStatus === "uploading") {
+                    handleCancelUpload();
+                  }
+                  setView("semester");
+                }}
+                className="h-9 gap-1 text-xs"
+              >
+                <ArrowLeft className="size-4" /> Back to {currentSemester?.title || "Semester"}
+              </Button>
+
+              {/* Course & Semester shown cleanly as text info */}
+              <div className="inline-flex items-center gap-2 rounded-full border border-teal-200 bg-teal-50/70 px-3 py-1 text-xs font-semibold text-teal-800">
+                <span>{currentCourse?.name || "B.Pharm"}</span>
+                <span>•</span>
+                <span>{currentSemester?.title || "Semester 1"}</span>
+              </div>
+            </div>
+
+            {/* Access & Settings Icon Trigger */}
             <Button
-              variant="ghost"
+              type="button"
+              variant="outline"
               size="sm"
-              onClick={() => setView("semester")}
-              className="h-9 gap-1 text-xs"
+              onClick={() => setShowAccessSettingsModal(true)}
+              className="h-9 gap-2 text-xs border-slate-300 text-slate-700 hover:text-slate-900 hover:bg-slate-50 shadow-2xs"
             >
-              <ArrowLeft className="size-4" /> Back to {currentSemester?.title || "Semester"}
+              <Settings2 className="size-4 text-teal-600" />
+              <span>Access & Settings</span>
+              <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                matFormStatus === "Published" ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"
+              }`}>
+                {matFormStatus}
+              </span>
             </Button>
           </div>
 
           <form onSubmit={handleSaveMaterial} className="space-y-6">
-            <div className="grid gap-6 lg:grid-cols-12">
-              {/* Column 1: Material Details */}
-              <div className="space-y-4 rounded-2xl border border-border bg-card p-6 shadow-xs lg:col-span-5">
-                <h3 className="text-xs font-bold text-foreground uppercase tracking-wider">
-                  1. Material Details
-                </h3>
+            <div className="grid gap-6 lg:grid-cols-12 items-start">
+              {/* Left Column: Material Details (Simplified side-by-side grid) */}
+              <div className="space-y-4 rounded-2xl border border-border bg-card p-6 shadow-xs lg:col-span-7">
+                <div className="flex items-center justify-between border-b border-border/50 pb-3">
+                  <h3 className="text-xs font-bold text-foreground uppercase tracking-wider">
+                    Material Details
+                  </h3>
+                  <span className="text-[11px] text-muted-foreground">Required fields marked with *</span>
+                </div>
 
-                <div className="grid grid-cols-2 gap-3 text-xs">
-                  <div>
-                    <span className="text-muted-foreground">Course</span>
-                    <div className="mt-1 rounded-md border border-input bg-muted/40 px-3 py-2 font-medium">
-                      {currentCourse?.name || "B.Pharm"}
-                    </div>
+                {/* Row 1: Subject and Unit Selection SIDE-BY-SIDE */}
+                <div className="grid grid-cols-1 sm:grid-cols-12 gap-3">
+                  <div className="sm:col-span-8">
+                    <label className="text-xs font-bold text-foreground">
+                      Subject <span className="text-destructive">*</span>
+                    </label>
+                    <select
+                      required
+                      value={matFormSubjectId}
+                      onChange={(e) => setMatFormSubjectId(e.target.value)}
+                      className="mt-1.5 h-10 w-full rounded-md border border-input bg-background px-3 text-xs"
+                    >
+                      <option value="">Select Subject</option>
+                      {semesterSubjects.map((s) => (
+                        <option key={s.id} value={s.id}>
+                          {s.name} ({s.code})
+                        </option>
+                      ))}
+                    </select>
+                    {semesterSubjects.length === 0 && (
+                      <p className="mt-1 text-[11px] text-amber-600">
+                        No subjects found. Please add a subject first.
+                      </p>
+                    )}
                   </div>
-                  <div>
-                    <span className="text-muted-foreground">Semester</span>
-                    <div className="mt-1 rounded-md border border-input bg-muted/40 px-3 py-2 font-medium">
-                      {currentSemester?.title || "Semester 1"}
-                    </div>
+
+                  <div className="sm:col-span-4">
+                    <label className="text-xs font-bold text-foreground">
+                      Unit Selection <span className="text-destructive">*</span>
+                    </label>
+                    <select
+                      required
+                      value={matFormUnitNumber}
+                      onChange={(e) => setMatFormUnitNumber(Number(e.target.value))}
+                      className="mt-1.5 h-10 w-full rounded-md border border-input bg-background px-3 text-xs"
+                    >
+                      {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((num) => (
+                        <option key={num} value={num}>
+                          Unit {num}
+                        </option>
+                      ))}
+                    </select>
                   </div>
                 </div>
 
-                <div>
-                  <label className="text-xs font-bold text-foreground">
-                    Subject <span className="text-destructive">*</span>
-                  </label>
-                  <select
-                    required
-                    value={matFormSubjectId}
-                    onChange={(e) => setMatFormSubjectId(e.target.value)}
-                    className="mt-1.5 h-10 w-full rounded-md border border-input bg-background px-3 text-xs"
-                  >
-                    <option value="">Select Subject</option>
-                    {semesterSubjects.map((s) => (
-                      <option key={s.id} value={s.id}>
-                        {s.name} ({s.code})
-                      </option>
-                    ))}
-                  </select>
-                  {semesterSubjects.length === 0 && (
-                    <p className="mt-1 text-[11px] text-amber-600">
-                      No subjects found. Please add a subject first.
-                    </p>
-                  )}
+                {/* Row 2: Material Title and Material Type SIDE-BY-SIDE */}
+                <div className="grid grid-cols-1 sm:grid-cols-12 gap-3">
+                  <div className="sm:col-span-8">
+                    <label className="text-xs font-bold text-foreground">
+                      Material Title <span className="text-destructive">*</span>
+                    </label>
+                    <Input
+                      required
+                      placeholder="e.g. Unit 1 Notes - Overview"
+                      value={matFormTitle}
+                      onChange={(e) => setMatFormTitle(e.target.value)}
+                      className="mt-1.5 h-10 text-xs"
+                    />
+                  </div>
+
+                  <div className="sm:col-span-4">
+                    <label className="text-xs font-bold text-foreground">
+                      Material Type <span className="text-destructive">*</span>
+                    </label>
+                    <select
+                      value={matFormType}
+                      onChange={(e) => setMatFormType(e.target.value)}
+                      className="mt-1.5 h-10 w-full rounded-md border border-input bg-background px-3 text-xs"
+                    >
+                      {MATERIAL_TYPES.map((t) => (
+                        <option key={t} value={t}>
+                          {t}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
                 </div>
 
-                <div>
-                  <label className="text-xs font-bold text-foreground">
-                    Unit Selection <span className="text-destructive">*</span>
-                  </label>
-                  <select
-                    required
-                    value={matFormUnitNumber}
-                    onChange={(e) => setMatFormUnitNumber(Number(e.target.value))}
-                    className="mt-1.5 h-10 w-full rounded-md border border-input bg-background px-3 text-xs"
-                  >
-                    {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((num) => (
-                      <option key={num} value={num}>
-                        Unit {num}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div>
-                  <label className="text-xs font-bold text-foreground">
-                    Material Title <span className="text-destructive">*</span>
-                  </label>
-                  <Input
-                    required
-                    placeholder="e.g. Unit 1 Notes - Overview"
-                    value={matFormTitle}
-                    onChange={(e) => setMatFormTitle(e.target.value)}
-                    className="mt-1.5 h-10 text-xs"
-                  />
-                </div>
-
+                {/* Row 3: Description */}
                 <div>
                   <label className="text-xs font-bold text-foreground">Description</label>
                   <textarea
                     rows={3}
-                    placeholder="Enter detailed description..."
+                    placeholder="Enter detailed description or chapter coverage for students..."
                     value={matFormDescription}
                     onChange={(e) => setMatFormDescription(e.target.value)}
                     className="mt-1.5 w-full rounded-md border border-input bg-background p-3 text-xs"
                   />
                 </div>
 
-                <div>
-                  <label className="text-xs font-bold text-foreground">
-                    Material Type <span className="text-destructive">*</span>
-                  </label>
-                  <select
-                    value={matFormType}
-                    onChange={(e) => setMatFormType(e.target.value)}
-                    className="mt-1.5 h-10 w-full rounded-md border border-input bg-background px-3 text-xs"
-                  >
-                    {MATERIAL_TYPES.map((t) => (
-                      <option key={t} value={t}>
-                        {t}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div>
-                  <label className="text-xs font-bold text-foreground">Price Type</label>
-                  <div className="mt-2 flex items-center gap-6 text-xs">
-                    <label className="flex items-center gap-2 cursor-pointer">
-                      <input
-                        type="radio"
-                        name="priceType"
-                        checked={matFormPriceType === "free"}
-                        onChange={() => setMatFormPriceType("free")}
-                        className="text-teal-600 focus:ring-teal-500"
-                      />
-                      <span>Free (₹0 Free)</span>
-                    </label>
-                    <label className="flex items-center gap-2 cursor-pointer">
-                      <input
-                        type="radio"
-                        name="priceType"
-                        checked={matFormPriceType === "paid"}
-                        onChange={() => setMatFormPriceType("paid")}
-                        className="text-teal-600 focus:ring-teal-500"
-                      />
-                      <span>Paid</span>
-                    </label>
+                {/* Row 4: Price Type and Amount SIDE-BY-SIDE */}
+                <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 items-end pt-1">
+                  <div className={matFormPriceType === "paid" ? "sm:col-span-6" : "sm:col-span-12"}>
+                    <label className="text-xs font-bold text-foreground">Price Type</label>
+                    <div className="mt-1.5 flex items-center gap-3">
+                      <label className={`flex-1 flex items-center justify-center gap-2 p-2.5 rounded-lg border cursor-pointer text-xs font-semibold transition-all ${
+                        matFormPriceType === "free"
+                          ? "border-teal-600 bg-teal-50/70 text-teal-800"
+                          : "border-input bg-background hover:bg-muted/40 text-foreground"
+                      }`}>
+                        <input
+                          type="radio"
+                          name="priceType"
+                          checked={matFormPriceType === "free"}
+                          onChange={() => setMatFormPriceType("free")}
+                          className="text-teal-600 focus:ring-teal-500"
+                        />
+                        <span>Free (₹0 Free)</span>
+                      </label>
+                      <label className={`flex-1 flex items-center justify-center gap-2 p-2.5 rounded-lg border cursor-pointer text-xs font-semibold transition-all ${
+                        matFormPriceType === "paid"
+                          ? "border-teal-600 bg-teal-50/70 text-teal-800"
+                          : "border-input bg-background hover:bg-muted/40 text-foreground"
+                      }`}>
+                        <input
+                          type="radio"
+                          name="priceType"
+                          checked={matFormPriceType === "paid"}
+                          onChange={() => setMatFormPriceType("paid")}
+                          className="text-teal-600 focus:ring-teal-500"
+                        />
+                        <span>Paid Note</span>
+                      </label>
+                    </div>
                   </div>
-                </div>
 
-                {matFormPriceType === "paid" && (
-                  <div>
-                    <label className="text-xs font-bold text-foreground">Price (₹)</label>
-                    <Input
-                      type="number"
-                      min={1}
-                      placeholder="e.g. 39"
-                      value={matFormPrice || ""}
-                      onChange={(e) => setMatFormPrice(Number(e.target.value))}
-                      className="mt-1.5 h-10 text-xs"
-                    />
-                  </div>
-                )}
+                  {matFormPriceType === "paid" && (
+                    <div className="sm:col-span-6 animate-in fade-in duration-200">
+                      <label className="text-xs font-bold text-foreground">
+                        Price (₹) <span className="text-destructive">*</span>
+                      </label>
+                      <div className="relative mt-1.5">
+                        <span className="absolute left-3 top-2.5 text-xs font-bold text-muted-foreground">₹</span>
+                        <Input
+                          type="number"
+                          min={1}
+                          required
+                          placeholder="e.g. 49"
+                          value={matFormPrice || ""}
+                          onChange={(e) => setMatFormPrice(Number(e.target.value))}
+                          className="h-10 pl-7 text-xs font-bold"
+                        />
+                      </div>
+                    </div>
+                  )}
+                </div>
               </div>
 
-              {/* Column 2: File & Preview */}
-              <div className="space-y-4 rounded-2xl border border-border bg-card p-6 shadow-xs lg:col-span-4">
-                <h3 className="text-xs font-bold text-foreground uppercase tracking-wider">
-                  2. File & Preview
-                </h3>
-
-                <div className="rounded-xl border-2 border-dashed border-border bg-muted/20 p-6 text-center">
-                  <UploadCloud className="mx-auto size-10 text-teal-600" />
-                  <p className="mt-2 text-xs font-bold text-foreground">Upload PDF or Document</p>
-                  <p className="mt-0.5 text-[11px] text-muted-foreground">
-                    Drag & drop or click to upload. Supports PDF, up to 50MB
-                  </p>
-                  <label className="mt-4 inline-block cursor-pointer rounded-lg bg-teal-600 px-4 py-2 text-xs font-semibold text-white hover:bg-teal-700">
-                    Browse PDF File
-                    <input
-                      type="file"
-                      accept=".pdf,application/pdf"
-                      onChange={(e) => {
-                        const f = e.target.files?.[0];
-                        if (f) {
-                          const isPdf =
-                            f.type === "application/pdf" ||
-                            f.name.toLowerCase().endsWith(".pdf");
-                          if (!isPdf) {
-                            toast.error("Invalid file format. Only PDF files (.pdf) are permitted.");
-                            return;
-                          }
-                          if (f.size > 52428800) {
-                            toast.error("File size exceeds 50 MB limit.");
-                            return;
-                          }
-                          setMatFormFile(f);
-                        }
-                      }}
-                      className="hidden"
-                    />
-                  </label>
-                  {matFormFile ? (
-                    <div className="mt-3 flex items-center justify-center gap-2 text-xs text-teal-700 bg-teal-50 py-1.5 px-3 rounded-lg border border-teal-200">
-                      <File className="size-4 shrink-0" />
-                      <span className="font-semibold truncate max-w-[200px]">{matFormFile.name}</span>
-                      <span className="text-[10px] text-muted-foreground shrink-0">
-                        ({(matFormFile.size / (1024 * 1024)).toFixed(2)} MB)
-                      </span>
-                    </div>
-                  ) : editingMaterial?.file_url ? (
-                    <div className="mt-3 text-xs text-teal-800 bg-teal-50/80 p-2.5 rounded-lg border border-teal-200">
-                      <p className="font-semibold">Current File Attached:</p>
-                      <p className="text-[11px] truncate text-teal-700">{editingMaterial.file_name || "Uploaded PDF"}</p>
-                      <p className="text-[10px] text-muted-foreground mt-1">Select a new PDF file to replace it.</p>
-                    </div>
-                  ) : null}
+              {/* Right Column: File Upload & Google Drive Resource Link */}
+              <div className="space-y-4 rounded-2xl border border-border bg-card p-6 shadow-xs lg:col-span-5">
+                <div className="flex items-center justify-between border-b border-border/50 pb-3">
+                  <h3 className="text-xs font-bold text-foreground uppercase tracking-wider">
+                    File & Online Resource
+                  </h3>
+                  <span className="text-[11px] text-muted-foreground">PDF or Drive Link</span>
                 </div>
 
-                <div>
-                  <label className="text-xs font-bold text-foreground">
-                    Google Drive or Resource Link
+                {/* Upload Box with Real-time Uploading % and Cancel */}
+                <div className="rounded-xl border-2 border-dashed border-border bg-muted/20 p-5 text-center transition-all">
+                  {uploadStatus === "uploading" ? (
+                    <div className="space-y-3 py-2">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="font-bold text-teal-800 flex items-center gap-1.5">
+                          <UploadCloud className="size-4 animate-bounce text-teal-600" />
+                          Uploading PDF to Storage...
+                        </span>
+                        <span className="font-black text-teal-700 text-sm">{uploadProgress}%</span>
+                      </div>
+
+                      {/* Animated Progress Bar */}
+                      <div className="h-2.5 w-full overflow-hidden rounded-full bg-slate-200">
+                        <div
+                          className="h-full rounded-full bg-linear-to-r from-teal-500 to-emerald-500 transition-all duration-150"
+                          style={{ width: `${uploadProgress}%` }}
+                        />
+                      </div>
+
+                      <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+                        <span>
+                          {totalBytes > 0
+                            ? `${(uploadedBytes / (1024 * 1024)).toFixed(1)} MB / ${(totalBytes / (1024 * 1024)).toFixed(1)} MB`
+                            : "Uploading..."}
+                        </span>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={handleCancelUpload}
+                          className="h-6 px-2 text-[11px] text-red-600 hover:text-red-700 hover:bg-red-50"
+                        >
+                          <XCircle className="size-3.5 mr-1" />
+                          Cancel
+                        </Button>
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      <UploadCloud className="mx-auto size-9 text-teal-600" />
+                      <p className="mt-1.5 text-xs font-bold text-foreground">Upload PDF Document</p>
+                      <p className="mt-0.5 text-[11px] text-muted-foreground">
+                        Drag & drop or browse. Max size 50 MB
+                      </p>
+
+                      <label className="mt-3 inline-block cursor-pointer rounded-lg bg-teal-600 px-4 py-2 text-xs font-semibold text-white shadow-xs hover:bg-teal-700">
+                        Browse PDF File
+                        <input
+                          type="file"
+                          accept=".pdf,application/pdf"
+                          onChange={(e) => {
+                            const f = e.target.files?.[0];
+                            if (f) {
+                              const isPdf =
+                                f.type === "application/pdf" ||
+                                f.name.toLowerCase().endsWith(".pdf");
+                              if (!isPdf) {
+                                toast.error("Invalid file format. Only PDF files (.pdf) are permitted.");
+                                return;
+                              }
+                              if (f.size > 52428800) {
+                                toast.error("File size exceeds 50 MB limit.");
+                                return;
+                              }
+                              setMatFormFile(f);
+                            }
+                          }}
+                          className="hidden"
+                        />
+                      </label>
+
+                      {matFormFile ? (
+                        <div className="mt-3 flex items-center justify-between text-xs text-teal-800 bg-teal-50 py-2 px-3 rounded-lg border border-teal-200">
+                          <div className="flex items-center gap-2 truncate">
+                            <File className="size-4 shrink-0 text-teal-600" />
+                            <span className="font-semibold truncate max-w-[160px]">{matFormFile.name}</span>
+                            <span className="text-[10px] text-muted-foreground shrink-0">
+                              ({(matFormFile.size / (1024 * 1024)).toFixed(2)} MB)
+                            </span>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setMatFormFile(null)}
+                            className="text-slate-400 hover:text-red-500 p-0.5"
+                            title="Remove file"
+                          >
+                            <X className="size-4" />
+                          </button>
+                        </div>
+                      ) : editingMaterial?.file_url ? (
+                        <div className="mt-3 text-xs text-teal-800 bg-teal-50/80 p-2.5 rounded-lg border border-teal-200 text-left">
+                          <p className="font-semibold flex items-center gap-1.5">
+                            <CheckCircle2 className="size-3.5 text-teal-600" /> Existing Attached PDF:
+                          </p>
+                          <p className="text-[11px] truncate text-teal-700 mt-0.5">{editingMaterial.file_name || "Uploaded PDF"}</p>
+                          <p className="text-[10px] text-muted-foreground mt-1">Select a new PDF file above to replace it.</p>
+                        </div>
+                      ) : null}
+                    </>
+                  )}
+                </div>
+
+                {/* Google Drive Link Option (Opens protected in app viewer) */}
+                <div className="pt-1">
+                  <label className="text-xs font-bold text-foreground flex items-center justify-between">
+                    <span className="flex items-center gap-1.5">
+                      <LinkIcon className="size-3.5 text-teal-600" /> Google Drive or Resource Link
+                    </span>
+                    <span className="text-[10px] font-normal text-muted-foreground">Protected In-App</span>
                   </label>
                   <Input
                     placeholder="https://drive.google.com/file/d/..."
@@ -1156,24 +1314,86 @@ export default function MaterialManagementPage() {
                     className="mt-1.5 h-10 text-xs"
                   />
                   <p className="mt-1 text-[11px] text-muted-foreground">
-                    Direct viewer or download link for students.
+                    Google Drive link opens directly inside our protected in-app viewer with student watermark overlay.
                   </p>
                 </div>
               </div>
+            </div>
 
-              {/* Column 3: Access & Settings */}
-              <div className="space-y-4 rounded-2xl border border-border bg-card p-6 shadow-xs lg:col-span-3">
-                <h3 className="text-xs font-bold text-foreground uppercase tracking-wider">
-                  3. Access & Settings
-                </h3>
+            {/* Bottom Actions Bar */}
+            <div className="flex items-center justify-between gap-3 rounded-2xl border border-border bg-card p-4 shadow-xs">
+              <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setShowAccessSettingsModal(true)}
+                  className="h-9 gap-1.5 text-xs border-slate-200 text-slate-700"
+                >
+                  <Settings2 className="size-3.5 text-teal-600" />
+                  <span>Access & Security</span>
+                </Button>
+                <span className="text-[11px] text-muted-foreground hidden sm:inline">
+                  Status: <strong className="text-foreground">{matFormStatus}</strong> • Watermark: <strong className="text-foreground">{matFormWatermark ? "Enabled" : "Off"}</strong>
+                </span>
+              </div>
 
+              <div className="flex items-center gap-3">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => {
+                    if (uploadStatus === "uploading") {
+                      handleCancelUpload();
+                    }
+                    setView("semester");
+                  }}
+                  className="h-10 text-xs"
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type="submit"
+                  disabled={matFormSubmitting}
+                  className="h-10 bg-teal-600 text-xs text-white hover:bg-teal-700 font-semibold px-5 shadow-xs"
+                >
+                  {uploadStatus === "uploading"
+                    ? `Uploading (${uploadProgress}%)...`
+                    : matFormSubmitting
+                      ? "Saving..."
+                      : editingMaterial
+                        ? "Update Material"
+                        : "Save Material"}
+                </Button>
+              </div>
+            </div>
+          </form>
+
+          {/* Access & Settings Popup Dialog (Clean modal configured on demand) */}
+          <AlertDialog open={showAccessSettingsModal} onOpenChange={setShowAccessSettingsModal}>
+            <AlertDialogContent className="max-w-md rounded-2xl p-6">
+              <AlertDialogHeader>
+                <div className="flex items-center gap-2.5">
+                  <div className="flex size-9 items-center justify-center rounded-xl bg-teal-50 text-teal-700 border border-teal-100">
+                    <ShieldCheck className="size-5" />
+                  </div>
+                  <div>
+                    <AlertDialogTitle className="text-base font-bold">Access & Security Settings</AlertDialogTitle>
+                    <AlertDialogDescription className="text-xs text-muted-foreground">
+                      Configure visibility and restrictions. Defaults are automatically applied.
+                    </AlertDialogDescription>
+                  </div>
+                </div>
+              </AlertDialogHeader>
+
+              <div className="space-y-4 py-3 text-xs">
+                {/* Status: Published vs Draft */}
                 <div>
-                  <label className="text-xs font-bold text-foreground">Status</label>
-                  <div className="mt-2 flex items-center gap-4 text-xs">
+                  <label className="text-xs font-bold text-foreground">Publication Status</label>
+                  <div className="mt-1.5 flex items-center gap-4">
                     <label className="flex items-center gap-2 cursor-pointer">
                       <input
                         type="radio"
-                        name="matStatus"
+                        name="modalMatStatus"
                         checked={matFormStatus === "Draft"}
                         onChange={() => setMatFormStatus("Draft")}
                         className="text-teal-600 focus:ring-teal-500"
@@ -1183,21 +1403,22 @@ export default function MaterialManagementPage() {
                     <label className="flex items-center gap-2 cursor-pointer">
                       <input
                         type="radio"
-                        name="matStatus"
+                        name="modalMatStatus"
                         checked={matFormStatus === "Published"}
                         onChange={() => setMatFormStatus("Published")}
                         className="text-teal-600 focus:ring-teal-500"
                       />
-                      <span>Published</span>
+                      <span className="font-semibold text-teal-800">Published (Visible to students)</span>
                     </label>
                   </div>
                 </div>
 
-                <div className="space-y-3 pt-2">
-                  <div className="flex items-center justify-between text-xs">
+                {/* Security Flags */}
+                <div className="space-y-3 pt-2 border-t border-border">
+                  <div className="flex items-center justify-between">
                     <div>
                       <p className="font-semibold text-foreground">Allow Download</p>
-                      <p className="text-[10px] text-muted-foreground">Let students download.</p>
+                      <p className="text-[10px] text-muted-foreground">Permit students to download original file.</p>
                     </div>
                     <input
                       type="checkbox"
@@ -1207,10 +1428,10 @@ export default function MaterialManagementPage() {
                     />
                   </div>
 
-                  <div className="flex items-center justify-between text-xs">
+                  <div className="flex items-center justify-between">
                     <div>
                       <p className="font-semibold text-foreground">Allow Print</p>
-                      <p className="text-[10px] text-muted-foreground">Allow printing.</p>
+                      <p className="text-[10px] text-muted-foreground">Enable browser print function.</p>
                     </div>
                     <input
                       type="checkbox"
@@ -1220,10 +1441,10 @@ export default function MaterialManagementPage() {
                     />
                   </div>
 
-                  <div className="flex items-center justify-between text-xs">
+                  <div className="flex items-center justify-between">
                     <div>
                       <p className="font-semibold text-foreground">Add Watermark</p>
-                      <p className="text-[10px] text-muted-foreground">Student watermark.</p>
+                      <p className="text-[10px] text-muted-foreground">Overlay student name, email & ID on viewer.</p>
                     </div>
                     <input
                       type="checkbox"
@@ -1234,7 +1455,8 @@ export default function MaterialManagementPage() {
                   </div>
                 </div>
 
-                <div className="border-t border-border pt-3">
+                {/* Visible To */}
+                <div className="pt-2 border-t border-border">
                   <label className="text-xs font-bold text-foreground">Visible To</label>
                   <select
                     value={matFormVisibleTo}
@@ -1246,34 +1468,23 @@ export default function MaterialManagementPage() {
                   </select>
                 </div>
 
-                <div className="rounded-lg bg-muted/40 p-3 text-[11px] text-muted-foreground">
+                <div className="rounded-lg bg-teal-50/70 border border-teal-100 p-2.5 text-[11px] text-teal-800">
                   <p>
-                    <strong>Security Notice:</strong> Download restrictions enforce browser
-                    controls. OS-level screen capture cannot be blocked.
+                    <strong>Protection Active:</strong> Right-click, download, and external copying are blocked in the protected viewer.
                   </p>
                 </div>
               </div>
-            </div>
 
-            {/* Bottom Actions */}
-            <div className="flex items-center justify-end gap-3 rounded-2xl border border-border bg-card p-4 shadow-xs">
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => setView("semester")}
-                className="h-10 text-xs"
-              >
-                Cancel
-              </Button>
-              <Button
-                type="submit"
-                disabled={matFormSubmitting}
-                className="h-10 bg-teal-600 text-xs text-white hover:bg-teal-700"
-              >
-                {matFormSubmitting ? "Saving..." : "Save Material"}
-              </Button>
-            </div>
-          </form>
+              <AlertDialogFooter>
+                <AlertDialogAction
+                  onClick={() => setShowAccessSettingsModal(false)}
+                  className="bg-teal-600 hover:bg-teal-700 text-white text-xs"
+                >
+                  Apply & Close
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
         </div>
       </AdminLayout>
     );
@@ -1673,16 +1884,21 @@ export default function MaterialManagementPage() {
                   </div>
                 )}
                 {detailsMaterial.drive_url && (
-                  <div>
-                    <span className="font-semibold text-muted-foreground">External Link:</span>
-                    <a
-                      href={detailsMaterial.drive_url}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="ml-2 text-teal-600 hover:underline break-all"
+                  <div className="flex items-center justify-between gap-2 rounded-lg border border-teal-200 bg-teal-50/60 p-2.5">
+                    <div className="min-w-0">
+                      <span className="font-semibold text-teal-900 block text-xs">Google Drive Resource:</span>
+                      <span className="text-[11px] text-teal-700 font-mono truncate max-w-[280px] block">
+                        {detailsMaterial.drive_url}
+                      </span>
+                    </div>
+                    <Button
+                      type="button"
+                      size="sm"
+                      onClick={() => void handleOpenDocument(detailsMaterial)}
+                      className="h-8 shrink-0 gap-1.5 rounded-lg bg-teal-600 px-3 text-xs font-semibold text-white hover:bg-teal-700"
                     >
-                      {detailsMaterial.drive_url}
-                    </a>
+                      <Eye className="size-3.5" /> View In-App
+                    </Button>
                   </div>
                 )}
               </div>
@@ -2089,14 +2305,14 @@ export default function MaterialManagementPage() {
                   </Button>
                 )}
                 {previewMaterial.drive_url && (
-                  <a
-                    href={previewMaterial.drive_url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-muted/40 px-3 py-2 text-xs font-semibold text-foreground hover:bg-muted"
+                  <Button
+                    type="button"
+                    size="sm"
+                    onClick={() => void handleOpenDocument(previewMaterial)}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-teal-200 bg-teal-50 px-3 py-2 text-xs font-semibold text-teal-800 hover:bg-teal-100"
                   >
-                    <ExternalLink className="size-3.5" /> External Link
-                  </a>
+                    <Eye className="size-3.5 text-teal-600" /> Open In-App Viewer
+                  </Button>
                 )}
                 {!previewMaterial.file_url && !previewMaterial.drive_url && (
                   <p className="text-muted-foreground italic">No document file attached.</p>

@@ -155,13 +155,6 @@ export function StudentLayout({
       exact: true,
     },
     {
-      label: "Saved Notes",
-      to: "/dashboard",
-      search: { tab: "saved" },
-      icon: Heart,
-      exact: false,
-    },
-    {
       label: "Purchases",
       to: "/dashboard/orders",
       icon: ShoppingBag,

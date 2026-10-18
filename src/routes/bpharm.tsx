@@ -96,18 +96,19 @@ export default function BPharmBrowsePage() {
   // Fetch student's real purchases and paid orders from Supabase
   useEffect(() => {
     if (!student?.id) return;
+    const currentStudentId = student.id;
     let isMounted = true;
     async function fetchStudentOwnership() {
       try {
         const { data: purs } = await supabase
           .from("purchases")
           .select("material_id, status, payment_status")
-          .eq("student_id", student.id);
+          .eq("student_id", currentStudentId);
 
         const { data: ords } = await supabase
           .from("orders")
           .select("material_ids, product_id, status")
-          .eq("student_id", student.id)
+          .eq("student_id", currentStudentId)
           .eq("status", "Paid");
 
         if (isMounted) {

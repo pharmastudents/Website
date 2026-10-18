@@ -1,5 +1,5 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useCallback } from "react";
 import { StudentLayout } from "@/components/student/StudentLayout";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -43,6 +43,7 @@ export default function DashboardPage() {
   const [dbPurchases, setDbPurchases] = useState<any[]>([]);
   const [dbFavorites, setDbFavorites] = useState<any[]>([]);
   const [loadingDb, setLoadingDb] = useState(true);
+  const [dbLoaded, setDbLoaded] = useState(false);
 
   // Authentication Guard
   useEffect(() => {
@@ -54,7 +55,7 @@ export default function DashboardPage() {
     }
   }, [ready, session, student, navigate]);
 
-  // Load real data from Supabase
+  // Load real dynamic data from Supabase for this specific student
   useEffect(() => {
     let isMounted = true;
     async function loadStudentData() {
@@ -97,16 +98,20 @@ export default function DashboardPage() {
           .eq("student_id", student.id);
 
         if (isMounted) {
-          if (subs && subs.length > 0) setDbSubjects(subs);
-          if (mats && mats.length > 0) setDbMaterials(mats);
-          if (purs) setDbPurchases(purs);
-          if (ords) setDbOrders(ords);
-          if (favs) setDbFavorites(favs);
+          setDbSubjects(subs || []);
+          setDbMaterials(mats || []);
+          setDbPurchases(purs || []);
+          setDbOrders(ords || []);
+          setDbFavorites(favs || []);
+          setDbLoaded(true);
         }
       } catch (err) {
         console.warn("Could not load database records for student dashboard:", err);
       } finally {
-        if (isMounted) setLoadingDb(false);
+        if (isMounted) {
+          setLoadingDb(false);
+          setDbLoaded(true);
+        }
       }
     }
 
@@ -118,72 +123,137 @@ export default function DashboardPage() {
     };
   }, [student?.id, student?.semester]);
 
-  // Derived Subjects (from Supabase, fallback to store)
+  // Derived Subjects: strictly from DB if loaded, fallback only if loading
   const semesterSubjects = useMemo(() => {
+    if (dbLoaded) return dbSubjects;
     if (dbSubjects.length > 0) return dbSubjects;
     return db.subjects.filter((s) => s.semester === (student?.semester || 1));
-  }, [dbSubjects, db.subjects, student?.semester]);
+  }, [dbLoaded, dbSubjects, db.subjects, student?.semester]);
 
-  // Derived Materials (from Supabase, fallback to store)
+  // Derived Materials: strictly from DB if loaded, fallback only if loading
   const semesterMaterials = useMemo(() => {
+    if (dbLoaded) return dbMaterials;
     if (dbMaterials.length > 0) return dbMaterials;
     return db.materials.filter(
       (m) =>
         (m.semester === (student?.semester || 1) || m.year === (student?.year || 1)) &&
         m.published,
     );
-  }, [dbMaterials, db.materials, student?.semester, student?.year]);
+  }, [dbLoaded, dbMaterials, db.materials, student?.semester, student?.year]);
 
   // Check if student owns/unlocked a material
-  const checkUnlocked = (matId: string, isPremium: boolean, price: number): boolean => {
-    if (!isPremium || price === 0) return true;
-    const directPurchase = dbPurchases.find((p) => p.material_id === matId);
-    if (directPurchase) {
-      const st = (directPurchase.status || "").toLowerCase();
-      const paySt = (directPurchase.payment_status || "").toLowerCase();
-      if (st === "unlocked" || st === "paid" || st === "active" || paySt === "paid" || paySt === "free") {
-        return true;
+  const checkUnlocked = useCallback(
+    (matId: string, isPremium: boolean, price: number): boolean => {
+      if (!isPremium || price === 0) return true;
+      const directPurchase = dbPurchases.find((p) => p.material_id === matId);
+      if (directPurchase) {
+        const st = (directPurchase.status || "").toLowerCase();
+        const paySt = ((directPurchase as any).payment_status || "").toLowerCase();
+        if (st === "unlocked" || st === "paid" || st === "active" || paySt === "paid" || paySt === "free") {
+          return true;
+        }
       }
-    }
-    const packageOrder = dbOrders.some(
-      (o) =>
-        o.status?.toLowerCase() === "paid" &&
-        (o.product_id === matId || (Array.isArray(o.material_ids) && o.material_ids.includes(matId))),
-    );
-    if (packageOrder) return true;
-    const storeMat = db.materials.find((m) => m.id === matId);
-    if (storeMat && hasAccess(storeMat)) return true;
-    return false;
-  };
+      const packageOrder = dbOrders.some(
+        (o) =>
+          o.status?.toLowerCase() === "paid" &&
+          (o.product_id === matId || (Array.isArray(o.material_ids) && o.material_ids.includes(matId))),
+      );
+      if (packageOrder) return true;
+      const storeMat = db.materials.find((m) => m.id === matId);
+      if (storeMat && hasAccess(storeMat)) return true;
+      return false;
+    },
+    [dbPurchases, dbOrders, db.materials, hasAccess],
+  );
 
-  // Metrics
+  // Distinct set of purchased material IDs for student
+  const purchasedMaterialIds = useMemo(() => {
+    const ids = new Set<string>();
+    dbPurchases.forEach((p) => {
+      const st = (p.status || "").toLowerCase();
+      const paySt = ((p as any).payment_status || "").toLowerCase();
+      if (st === "unlocked" || st === "paid" || st === "active" || paySt === "paid" || paySt === "free") {
+        if (p.material_id) ids.add(String(p.material_id));
+      }
+    });
+    dbOrders.forEach((o) => {
+      if (o.status?.toLowerCase() === "paid") {
+        if (Array.isArray(o.material_ids)) {
+          o.material_ids.forEach((id: string) => ids.add(String(id)));
+        }
+        if (o.product_id && o.product_id !== "cart") {
+          ids.add(String(o.product_id));
+        }
+      }
+    });
+    return ids;
+  }, [dbPurchases, dbOrders]);
+
+  // Dynamic Metrics directly calculated from database records
   const myNotesCount = useMemo(() => {
-    return semesterMaterials.filter((m) => {
+    const accessibleInSem = semesterMaterials.filter((m) => {
       const isPaid = m.is_premium ?? (Number(m.price) > 0);
       return checkUnlocked(m.id, isPaid, Number(m.price || 0));
-    }).length || dbPurchases.length || 12;
-  }, [semesterMaterials, dbPurchases]);
+    }).length;
+    return Math.max(purchasedMaterialIds.size, accessibleInSem);
+  }, [purchasedMaterialIds, semesterMaterials, checkUnlocked]);
 
-  const savedNotesCount = dbFavorites.length || db.favorites.length || 3;
-  const verifiedPurchasesCount = dbOrders.filter((o) => o.status?.toLowerCase() === "paid").length || 4;
-  const subjectsCount = semesterSubjects.length || 4;
+  const savedNotesCount = dbFavorites.length;
+  const verifiedPurchasesCount = dbOrders.length;
+  const subjectsCount = semesterSubjects.length;
 
-  // Course Progress Stats
-  const totalSemesterSubjects = semesterSubjects.length || 7;
+  // Dynamic Course Progress Stats
+  const totalSemesterSubjects = semesterSubjects.length;
   const purchasedSubjectsCount = useMemo(() => {
     let count = 0;
     for (const sub of semesterSubjects) {
       const subMats = semesterMaterials.filter((m) => (m.subject_id || m.subjectId) === sub.id);
-      if (subMats.length > 0 && subMats.some((m) => checkUnlocked(m.id, m.is_premium ?? (m.price > 0), Number(m.price || 0)))) {
+      if (
+        subMats.length > 0 &&
+        subMats.some((m) =>
+          checkUnlocked(m.id, m.is_premium ?? (Number(m.price) > 0), Number(m.price || 0)),
+        )
+      ) {
         count++;
       }
     }
-    return count || 3;
-  }, [semesterSubjects, semesterMaterials]);
+    return count;
+  }, [semesterSubjects, semesterMaterials, checkUnlocked]);
 
-  const totalSemesterMaterials = semesterMaterials.length || 24;
-  const accessedMaterialsCount = myNotesCount || 12;
-  const progressPercent = Math.min(100, Math.round((purchasedSubjectsCount / totalSemesterSubjects) * 100)) || 40;
+  const totalSemesterMaterials = semesterMaterials.length;
+  const accessedMaterialsCount = useMemo(() => {
+    return semesterMaterials.filter((m) => {
+      const isPaid = m.is_premium ?? (Number(m.price) > 0);
+      return checkUnlocked(m.id, isPaid, Number(m.price || 0));
+    }).length;
+  }, [semesterMaterials, checkUnlocked]);
+
+  const progressPercent =
+    totalSemesterSubjects > 0
+      ? Math.min(100, Math.round((purchasedSubjectsCount / totalSemesterSubjects) * 100))
+      : 0;
+
+  // Toggle favorite connected directly to database favorites
+  const handleToggleFavorite = async (matId: string) => {
+    if (!student) return;
+    const isCurrentlyFav = dbFavorites.some((f) => (f.material_id || f.materialId) === matId);
+    if (isCurrentlyFav) {
+      setDbFavorites((prev) => prev.filter((f) => (f.material_id || f.materialId) !== matId));
+      try {
+        await supabase.from("favorites").delete().eq("student_id", student.id).eq("material_id", matId);
+      } catch {}
+    } else {
+      setDbFavorites((prev) => [...prev, { student_id: student.id, material_id: matId }]);
+      try {
+        await supabase.from("favorites").insert({ student_id: student.id, material_id: matId });
+      } catch {}
+    }
+    toggleFavorite(matId);
+  };
+
+  const isMatFavorite = (matId: string) => {
+    return dbFavorites.some((f) => (f.material_id || f.materialId) === matId) || isFavorite(matId);
+  };
 
   // Subject icon helper
   const getSubjectIcon = (index: number) => {
@@ -319,7 +389,7 @@ export default function DashboardPage() {
 
           {/* Card 2: Saved Notes */}
           <Link
-            to="/dashboard"
+            to="/dashboard/my-resources"
             search={{ tab: "saved" } as any}
             className="group rounded-2xl border border-slate-200/80 bg-white p-5 shadow-xs transition-all hover:border-rose-200 hover:shadow-sm"
           >
@@ -493,9 +563,9 @@ export default function DashboardPage() {
               const subNotes = semesterMaterials.filter(
                 (m) => (m.subject_id || m.subjectId) === sub.id,
               );
-              const totalNotes = subNotes.length || 3;
+              const totalNotes = subNotes.length;
               const purchasedCount = subNotes.filter((m) =>
-                checkUnlocked(m.id, m.is_premium ?? (m.price > 0), Number(m.price || 0)),
+                checkUnlocked(m.id, m.is_premium ?? (Number(m.price) > 0), Number(m.price || 0)),
               ).length;
 
               return (
@@ -577,7 +647,7 @@ export default function DashboardPage() {
               const parentSub = semesterSubjects.find(
                 (s) => s.id === (mat.subject_id || mat.subjectId),
               );
-              const favorited = isFavorite(mat.id);
+              const favorited = isMatFavorite(mat.id);
               const inCart = isInCart(mat.id);
 
               return (
@@ -600,7 +670,7 @@ export default function DashboardPage() {
 
                       <button
                         type="button"
-                        onClick={() => toggleFavorite(mat.id)}
+                        onClick={() => handleToggleFavorite(mat.id)}
                         className={`p-1 rounded-md transition-colors ${
                           favorited
                             ? "text-rose-500 hover:bg-rose-50"

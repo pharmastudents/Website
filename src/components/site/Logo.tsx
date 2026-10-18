@@ -37,7 +37,7 @@ export function Logo({
       <img
         src="/pharmastudents-logo.png"
         alt="PharmaStudents.com"
-        className={`${heightClasses[size] || "h-10"} w-auto object-contain transition-transform duration-200 group-hover:scale-[1.02]`}
+        className={`${heightClasses[size] || "h-60"} w-auto object-contain transition-transform duration-200 group-hover:scale-[1.02]`}
       />
     </Link>
   );

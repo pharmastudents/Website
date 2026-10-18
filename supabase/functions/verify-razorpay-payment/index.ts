@@ -58,6 +58,14 @@ serve(async (req: Request) => {
       );
     }
 
+    // Match the Razorpay order ID against the saved internal order
+    if (order.razorpay_order_id && order.razorpay_order_id !== razorpayOrderId) {
+      return new Response(
+        JSON.stringify({ error: "Razorpay order ID mismatch with internal order record." }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
     // Idempotency: If already confirmed as Paid, return success immediately
     if (order.status === "Paid" || order.status === "paid") {
       return new Response(
@@ -82,6 +90,7 @@ serve(async (req: Request) => {
     if (!isSignatureValid) {
       console.error(`Invalid Razorpay signature for order ${orderId}, payment ${razorpayPaymentId}`);
 
+      // Record failed payment attempt
       await supabase.from("payments").upsert({
         order_id: orderId,
         student_id: user.id,
@@ -111,22 +120,34 @@ serve(async (req: Request) => {
       if (paymentDetails) {
         paymentMethod = paymentDetails.method || paymentMethod;
 
+        // Verify order ID match
         if (paymentDetails.order_id && paymentDetails.order_id !== razorpayOrderId) {
-          throw new Error("Razorpay payment does not match the expected order ID.");
+          return new Response(
+            JSON.stringify({ success: false, ok: false, error: "Razorpay payment does not match the expected order ID." }),
+            { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          );
         }
 
+        // Verify payment amount in paise matches order total
         const expectedPaise = order.total_amount || Math.round((order.final_amount || order.amount) * 100);
         if (paymentDetails.amount && Number(paymentDetails.amount) !== Number(expectedPaise)) {
-          throw new Error(`Payment amount mismatch: received ${paymentDetails.amount}, expected ${expectedPaise}.`);
+          return new Response(
+            JSON.stringify({ success: false, ok: false, error: `Payment amount mismatch: received ${paymentDetails.amount}, expected ${expectedPaise}.` }),
+            { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          );
         }
 
+        // Verify capture status
         if (paymentDetails.status !== "captured" && paymentDetails.status !== "authorized") {
-          throw new Error(`Payment is in '${paymentDetails.status}' state, not captured.`);
+          return new Response(
+            JSON.stringify({ success: false, ok: false, error: `Payment is in '${paymentDetails.status}' state, not captured.` }),
+            { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          );
         }
       }
     } catch (apiErr: any) {
       console.warn("Razorpay API check notice:", apiErr?.message);
-      if (apiErr?.message?.includes("mismatch") || apiErr?.message?.includes("not match")) {
+      if (apiErr?.message?.includes("mismatch") || apiErr?.message?.includes("not match") || apiErr?.message?.includes("state")) {
         return new Response(
           JSON.stringify({ success: false, ok: false, error: apiErr.message }),
           { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
@@ -146,43 +167,126 @@ serve(async (req: Request) => {
       }
     );
 
-    if (rpcErr) {
+    if (!rpcErr && confirmResult) {
+      if (confirmResult.success === false) {
+        console.error("RPC order confirmation rejected:", confirmResult.error);
+        return new Response(
+          JSON.stringify({ success: false, ok: false, error: confirmResult.error || "Order confirmation failed." }),
+          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+    } else {
       console.warn("RPC confirmation fallback, applying secure server transaction:", rpcErr);
 
-      await supabase
+      // Fallback updates using service-role client
+      const { error: ordUpdateErr } = await supabase
         .from("orders")
         .update({
-          status: "Paid",
+          status: "Paid", // Preserving TitleCase constraint
           transaction_id: razorpayPaymentId,
           payment_date: new Date().toISOString(),
           updated_at: new Date().toISOString(),
         })
         .eq("id", orderId);
 
-      await supabase.from("payments").upsert({
-        order_id: orderId,
-        student_id: user.id,
-        gateway: "razorpay",
-        razorpay_order_id: razorpayOrderId,
-        razorpay_payment_id: razorpayPaymentId,
-        razorpay_signature: razorpaySignature,
-        amount: order.total_amount || Math.round((order.final_amount || order.amount) * 100),
-        currency: "INR",
-        status: "captured",
-        payment_method: paymentMethod,
-        updated_at: new Date().toISOString(),
-      }, { onConflict: "razorpay_payment_id" });
-
-      let matIds: string[] = [];
-      if (Array.isArray(order.material_ids)) {
-        matIds = order.material_ids;
-      } else if (order.product_id && order.product_id !== "cart") {
-        matIds = [order.product_id];
+      if (ordUpdateErr) {
+        console.error("Failed to update order status in fallback:", ordUpdateErr);
+        return new Response(
+          JSON.stringify({ success: false, ok: false, error: "Failed to update order status." }),
+          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
       }
 
-      for (const mid of matIds) {
+      // Update existing payment record by razorpay_order_id or order_id, or upsert if not present
+      const { data: updatedPayment } = await supabase
+        .from("payments")
+        .update({
+          razorpay_payment_id: razorpayPaymentId,
+          razorpay_signature: razorpaySignature,
+          status: "captured",
+          payment_method: paymentMethod,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("razorpay_order_id", razorpayOrderId)
+        .select("id");
+
+      let paymentConfirmed = Boolean(updatedPayment && updatedPayment.length > 0);
+
+      if (!paymentConfirmed) {
+        const { data: updatedByOrder } = await supabase
+          .from("payments")
+          .update({
+            razorpay_order_id: razorpayOrderId,
+            razorpay_payment_id: razorpayPaymentId,
+            razorpay_signature: razorpaySignature,
+            status: "captured",
+            payment_method: paymentMethod,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("order_id", orderId)
+          .select("id");
+
+        paymentConfirmed = Boolean(updatedByOrder && updatedByOrder.length > 0);
+      }
+
+      if (!paymentConfirmed) {
+        await supabase.from("payments").upsert({
+          order_id: orderId,
+          student_id: user.id,
+          gateway: "razorpay",
+          razorpay_order_id: razorpayOrderId,
+          razorpay_payment_id: razorpayPaymentId,
+          razorpay_signature: razorpaySignature,
+          amount: order.total_amount || Math.round((order.final_amount || order.amount) * 100),
+          currency: "INR",
+          status: "captured",
+          payment_method: paymentMethod,
+          updated_at: new Date().toISOString(),
+        }, { onConflict: "razorpay_order_id" });
+      }
+
+      // Grant material purchases strictly resolving genuine material IDs
+      let matIdsToUnlock: string[] = [];
+      if (Array.isArray(order.material_ids) && order.material_ids.length > 0) {
+        matIdsToUnlock = order.material_ids;
+      } else if (order.product_type === "package" || order.product_type === "semester") {
+        // Resolve package semester materials using database relationships
+        const { data: pkg } = await supabase
+          .from("packages")
+          .select("semester")
+          .eq("id", order.product_id)
+          .maybeSingle();
+
+        const semNum = pkg?.semester || (order.product_title?.match(/Semester\s*([1-8])/i)?.[1] ? Number(order.product_title.match(/Semester\s*([1-8])/i)?.[1]) : null);
+
+        if (semNum) {
+          const { data: semSubs } = await supabase
+            .from("subjects")
+            .select("id")
+            .eq("semester", semNum);
+          const semSubIds = (semSubs || []).map((s) => s.id);
+
+          const { data: sMats } = await supabase
+            .from("materials")
+            .select("id, semester, subject_id, published, status");
+
+          if (sMats) {
+            matIdsToUnlock = sMats
+              .filter((m: any) =>
+                (m.semester === semNum || semSubIds.includes(m.subject_id)) &&
+                m.published !== false &&
+                m.status !== "Draft"
+              )
+              .map((m) => String(m.id));
+          }
+        }
+      } else if (order.product_id && order.product_id !== "cart") {
+        matIdsToUnlock = [order.product_id];
+      }
+
+      for (const mid of matIdsToUnlock) {
         if (mid) {
-          await supabase.from("purchases").upsert({
+          const { error: purErr } = await supabase.from("purchases").upsert({
             id: `pur_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
             student_id: user.id,
             material_id: String(mid),
@@ -193,6 +297,10 @@ serve(async (req: Request) => {
             purchased_at: new Date().toISOString(),
             created_at: new Date().toISOString(),
           }, { onConflict: "student_id,material_id" });
+
+          if (purErr) {
+            console.error("Failed to unlock purchase in fallback:", purErr);
+          }
         }
       }
     }
@@ -208,7 +316,7 @@ serve(async (req: Request) => {
       { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   } catch (err: any) {
-    console.error("verify-razorpay-payment error:", err);
+    console.error("verify-payment error:", err);
     return new Response(
       JSON.stringify({ error: err?.message || "Payment verification failed." }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }

@@ -1,38 +1,74 @@
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
+import { corsHeaders, handleCors } from "../_shared/cors.ts";
 import { getServiceClient } from "../_shared/supabase.ts";
-import { verifyRazorpayWebhookSignature } from "../_shared/razorpay.ts";
+import {
+  verifyRazorpayWebhookSignature,
+  getRazorpayCredentials,
+} from "../_shared/razorpay.ts";
 
 serve(async (req: Request) => {
-  if (req.method === "OPTIONS") {
-    return new Response("ok", { headers: { "Access-Control-Allow-Origin": "*" } });
-  }
+  const corsResponse = handleCors(req);
+  if (corsResponse) return corsResponse;
 
   try {
-    // 1. Get raw request body and signature header
+    // 1. Extract raw request body and signature header
     const rawBody = await req.text();
     const signature = req.headers.get("x-razorpay-signature");
+    const eventIdHeader = req.headers.get("x-razorpay-event-id");
+
+    const { webhookSecret } = getRazorpayCredentials();
+    const isSecretConfigured = Boolean(webhookSecret && webhookSecret.trim().length > 0);
+    const signatureLength = signature ? signature.length : 0;
+    const signaturePrefix = signature ? `${signature.slice(0, 6)}...` : "none";
+
+    // Safe diagnostic log (never prints secret or full signature)
+    console.log(
+      `[Webhook Request] Secret configured: ${isSecretConfigured}, Signature header present: ${Boolean(signature)} (len: ${signatureLength}, prefix: ${signaturePrefix}), Body bytes: ${rawBody.length}`
+    );
+
+    if (!isSecretConfigured) {
+      console.error("[Webhook Error] RAZORPAY_WEBHOOK_SECRET is not configured in Supabase environment secrets.");
+      return new Response(
+        JSON.stringify({ error: "Server webhook configuration incomplete." }),
+        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
 
     if (!signature) {
-      console.error("Missing x-razorpay-signature header");
-      return new Response(JSON.stringify({ error: "Missing signature header." }), {
-        status: 400,
-        headers: { "Content-Type": "application/json" },
-      });
+      console.warn("[Webhook Auth Error] Missing x-razorpay-signature header.");
+      return new Response(
+        JSON.stringify({ error: "Missing x-razorpay-signature header." }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
     }
 
-    // 2. Verify Webhook Signature against exact raw body
+    // 2. Authenticate Webhook: Verify signature against exact raw request body
     const isValid = await verifyRazorpayWebhookSignature(rawBody, signature);
     if (!isValid) {
-      console.error("Invalid Razorpay webhook signature.");
-      return new Response(JSON.stringify({ error: "Invalid webhook signature." }), {
-        status: 400,
-        headers: { "Content-Type": "application/json" },
-      });
+      console.warn(`[Webhook Auth Error] Signature verification failed (sig prefix: ${signaturePrefix}).`);
+      return new Response(
+        JSON.stringify({ error: "Invalid webhook signature." }),
+        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
     }
 
-    const payload = JSON.parse(rawBody);
-    const eventType = payload.event || "unknown";
-    const eventId = payload.id || req.headers.get("x-razorpay-event-id") || crypto.randomUUID();
+    console.log("[Webhook Auth] Signature successfully verified.");
+
+    let payload: any = {};
+    try {
+      payload = JSON.parse(rawBody);
+    } catch (parseErr: any) {
+      console.error("[Webhook Error] Malformed JSON payload:", parseErr);
+      return new Response(
+        JSON.stringify({ error: "Malformed JSON payload." }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    const eventType: string = payload.event || "unknown";
+    const eventId: string = payload.id || eventIdHeader || crypto.randomUUID();
+
+    console.log(`[Webhook Event] Processing event: ${eventType}, ID: ${eventId}`);
 
     const supabase = getServiceClient();
 
@@ -44,14 +80,14 @@ serve(async (req: Request) => {
       .maybeSingle();
 
     if (existingEvent && existingEvent.processing_status === "processed") {
-      console.log(`Webhook event ${eventId} already processed.`);
-      return new Response(JSON.stringify({ status: "already_processed" }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      });
+      console.log(`[Webhook Idempotency] Event ${eventId} was already processed. Skipping.`);
+      return new Response(
+        JSON.stringify({ status: "already_processed", eventId }),
+        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
     }
 
-    // Record incoming webhook event
+    // Record incoming webhook event as pending
     await supabase.from("payment_webhook_events").upsert({
       gateway_event_id: eventId,
       event_type: eventType,
@@ -59,7 +95,7 @@ serve(async (req: Request) => {
       payload: {
         event: eventType,
         created_at: payload.created_at,
-        contains: Object.keys(payload.payload || {}),
+        keys: Object.keys(payload.payload || {}),
       },
       received_at: new Date().toISOString(),
     }, { onConflict: "gateway_event_id" });
@@ -75,19 +111,140 @@ serve(async (req: Request) => {
         // Find internal order
         const { data: order } = await supabase
           .from("orders")
-          .select("id, status")
+          .select("*")
           .eq("razorpay_order_id", razorpayOrderId)
           .maybeSingle();
 
         if (order) {
-          // Idempotently confirm order and unlock access
-          await supabase.rpc("confirm_order_and_grant_access", {
-            p_order_id: order.id,
-            p_razorpay_order_id: razorpayOrderId,
-            p_razorpay_payment_id: razorpayPaymentId,
-            p_razorpay_signature: signature,
-            p_payment_method: paymentMethod,
-          });
+          // Always ensure the payment transaction record is updated with captured payment ID & signature
+          if (razorpayPaymentId) {
+            const { data: updatedPayment } = await supabase
+              .from("payments")
+              .update({
+                razorpay_payment_id: razorpayPaymentId,
+                razorpay_signature: signature,
+                status: "captured",
+                payment_method: paymentMethod,
+                updated_at: new Date().toISOString(),
+              })
+              .eq("razorpay_order_id", razorpayOrderId)
+              .select("id");
+
+            let paymentConfirmed = Boolean(updatedPayment && updatedPayment.length > 0);
+
+            if (!paymentConfirmed) {
+              const { data: updatedByOrder } = await supabase
+                .from("payments")
+                .update({
+                  razorpay_order_id: razorpayOrderId,
+                  razorpay_payment_id: razorpayPaymentId,
+                  razorpay_signature: signature,
+                  status: "captured",
+                  payment_method: paymentMethod,
+                  updated_at: new Date().toISOString(),
+                })
+                .eq("order_id", order.id)
+                .select("id");
+
+              paymentConfirmed = Boolean(updatedByOrder && updatedByOrder.length > 0);
+            }
+
+            if (!paymentConfirmed) {
+              await supabase.from("payments").upsert({
+                order_id: order.id,
+                student_id: order.student_id,
+                gateway: "razorpay",
+                razorpay_order_id: razorpayOrderId,
+                razorpay_payment_id: razorpayPaymentId,
+                razorpay_signature: signature,
+                amount: order.total_amount || Math.round((order.final_amount || order.amount) * 100),
+                currency: "INR",
+                status: "captured",
+                payment_method: paymentMethod,
+                updated_at: new Date().toISOString(),
+              }, { onConflict: "razorpay_order_id" });
+            }
+          }
+
+          // Idempotently confirm order and unlock access if not already marked Paid
+          if (order.status !== "Paid" && order.status !== "paid") {
+            const { data: rpcRes, error: rpcErr } = await supabase.rpc("confirm_order_and_grant_access", {
+              p_order_id: order.id,
+              p_razorpay_order_id: razorpayOrderId,
+              p_razorpay_payment_id: razorpayPaymentId,
+              p_razorpay_signature: signature,
+              p_payment_method: paymentMethod,
+            });
+
+            if (rpcErr || (rpcRes && rpcRes.success === false)) {
+              console.warn("[Webhook Fallback] RPC order confirmation notice:", rpcErr || rpcRes);
+
+              // Fallback direct updates using service role
+              await supabase
+                .from("orders")
+                .update({
+                  status: "Paid",
+                  transaction_id: razorpayPaymentId,
+                  payment_date: new Date().toISOString(),
+                  updated_at: new Date().toISOString(),
+                })
+                .eq("id", order.id);
+
+              // Resolve genuine material IDs to unlock (never saving package IDs as material IDs)
+              let matIdsToUnlock: string[] = [];
+              if (Array.isArray(order.material_ids) && order.material_ids.length > 0) {
+                matIdsToUnlock = order.material_ids;
+              } else if (order.product_type === "package" || order.product_type === "semester") {
+                const { data: pkg } = await supabase
+                  .from("packages")
+                  .select("semester")
+                  .eq("id", order.product_id)
+                  .maybeSingle();
+
+                const semNum = pkg?.semester || (order.product_title?.match(/Semester\s*([1-8])/i)?.[1] ? Number(order.product_title.match(/Semester\s*([1-8])/i)?.[1]) : null);
+
+                if (semNum) {
+                  const { data: semSubs } = await supabase
+                    .from("subjects")
+                    .select("id")
+                    .eq("semester", semNum);
+                  const semSubIds = (semSubs || []).map((s) => s.id);
+
+                  const { data: sMats } = await supabase
+                    .from("materials")
+                    .select("id, semester, subject_id, published, status");
+
+                  if (sMats) {
+                    matIdsToUnlock = sMats
+                      .filter((m: any) =>
+                        (m.semester === semNum || semSubIds.includes(m.subject_id)) &&
+                        m.published !== false &&
+                        m.status !== "Draft"
+                      )
+                      .map((m) => String(m.id));
+                  }
+                }
+              } else if (order.product_id && order.product_id !== "cart") {
+                matIdsToUnlock = [order.product_id];
+              }
+
+              for (const mid of matIdsToUnlock) {
+                if (mid) {
+                  await supabase.from("purchases").upsert({
+                    id: `pur_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+                    student_id: order.student_id,
+                    material_id: String(mid),
+                    order_id: order.id,
+                    amount: order.final_amount || order.amount,
+                    status: "unlocked",
+                    payment_status: "paid",
+                    purchased_at: new Date().toISOString(),
+                    created_at: new Date().toISOString(),
+                  }, { onConflict: "student_id,material_id" });
+                }
+              }
+            }
+          }
         }
       }
     } else if (eventType === "payment.failed") {
@@ -110,16 +267,48 @@ serve(async (req: Request) => {
             .update({ status: "Failed", updated_at: new Date().toISOString() })
             .eq("id", order.id);
 
-          await supabase.from("payments").upsert({
-            order_id: order.id,
-            student_id: paymentEntity?.notes?.student_id || crypto.randomUUID(),
-            gateway: "razorpay",
-            razorpay_order_id: razorpayOrderId,
-            razorpay_payment_id: razorpayPaymentId,
-            status: "failed",
-            failure_reason: reason,
-            updated_at: new Date().toISOString(),
-          }, { onConflict: "razorpay_payment_id" });
+          // Update existing payment record for this order by razorpay_order_id first, then order_id
+          const { data: updatedFail } = await supabase
+            .from("payments")
+            .update({
+              razorpay_payment_id: razorpayPaymentId,
+              status: "failed",
+              failure_reason: reason,
+              updated_at: new Date().toISOString(),
+            })
+            .eq("razorpay_order_id", razorpayOrderId)
+            .select("id");
+
+          let failRecorded = Boolean(updatedFail && updatedFail.length > 0);
+
+          if (!failRecorded) {
+            const { data: updatedByOrder } = await supabase
+              .from("payments")
+              .update({
+                razorpay_order_id: razorpayOrderId,
+                razorpay_payment_id: razorpayPaymentId,
+                status: "failed",
+                failure_reason: reason,
+                updated_at: new Date().toISOString(),
+              })
+              .eq("order_id", order.id)
+              .select("id");
+
+            failRecorded = Boolean(updatedByOrder && updatedByOrder.length > 0);
+          }
+
+          if (!failRecorded) {
+            await supabase.from("payments").upsert({
+              order_id: order.id,
+              student_id: paymentEntity?.notes?.student_id || crypto.randomUUID(),
+              gateway: "razorpay",
+              razorpay_order_id: razorpayOrderId,
+              razorpay_payment_id: razorpayPaymentId,
+              status: "failed",
+              failure_reason: reason,
+              updated_at: new Date().toISOString(),
+            }, { onConflict: "razorpay_order_id" });
+          }
         }
       }
     } else if (eventType === "refund.processed") {
@@ -158,13 +347,13 @@ serve(async (req: Request) => {
 
     return new Response(JSON.stringify({ status: "success", event: eventType }), {
       status: 200,
-      headers: { "Content-Type": "application/json" },
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (err: any) {
-    console.error("Razorpay webhook processing error:", err);
-    return new Response(JSON.stringify({ error: err?.message || "Webhook error." }), {
+    console.error("[Webhook Exception] Error during webhook processing:", err);
+    return new Response(JSON.stringify({ error: err?.message || "Internal webhook error." }), {
       status: 500,
-      headers: { "Content-Type": "application/json" },
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   }
 });

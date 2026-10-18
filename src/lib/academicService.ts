@@ -672,6 +672,108 @@ export const AcademicService = {
     return { success: true };
   },
 
+  // Extract Google Drive File ID from standard sharing/view/preview links
+  extractGoogleDriveId(url: string | null | undefined): string | null {
+    if (!url || typeof url !== "string") return null;
+    const clean = url.trim();
+    const match1 = clean.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
+    if (match1?.[1]) return match1[1];
+    const match2 = clean.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+    if (match2?.[1]) return match2[1];
+    const match3 = clean.match(/\/d\/([a-zA-Z0-9_-]+)/);
+    if (match3?.[1]) return match3[1];
+    return null;
+  },
+
+  // Upload file to Supabase storage with fine-grained real-time progress & abort support
+  async uploadStorageWithProgress(params: {
+    bucket: string;
+    path: string;
+    file: File;
+    onProgress?: ((percent: number, loaded: number, total: number) => void) | undefined;
+    abortSignal?: AbortSignal | undefined;
+  }): Promise<string> {
+    const { bucket, path, file, onProgress, abortSignal } = params;
+
+    if (abortSignal?.aborted) {
+      throw new DOMException("Upload aborted by user", "AbortError");
+    }
+
+    onProgress?.(2, 0, file.size);
+
+    const supabaseUrl = (import.meta as any).env?.VITE_SUPABASE_URL || "https://tfganiacycmmnorfyqam.supabase.co";
+    const supabaseKey =
+      (import.meta as any).env?.VITE_SUPABASE_ANON_KEY ||
+      (import.meta as any).env?.VITE_SUPABASE_PUBLISHABLE_KEY ||
+      "";
+
+    const { data: sessionData } = await supabase.auth.getSession();
+    const bearerToken = sessionData?.session?.access_token || supabaseKey;
+
+    return new Promise<string>((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      const cleanPath = path.startsWith("/") ? path.slice(1) : path;
+      const url = `${supabaseUrl}/storage/v1/object/${bucket}/${encodeURI(cleanPath)}`;
+
+      xhr.open("POST", url, true);
+      xhr.setRequestHeader("apikey", supabaseKey);
+      xhr.setRequestHeader("Authorization", `Bearer ${bearerToken}`);
+      xhr.setRequestHeader("Content-Type", file.type || "application/pdf");
+      xhr.setRequestHeader("x-upsert", "false");
+
+      const handleAbort = () => {
+        xhr.abort();
+        reject(new DOMException("Upload cancelled by user", "AbortError"));
+      };
+
+      if (abortSignal) {
+        abortSignal.addEventListener("abort", handleAbort, { once: true });
+      }
+
+      if (xhr.upload) {
+        xhr.upload.onprogress = (e) => {
+          if (e.lengthComputable) {
+            const percent = Math.min(99, Math.round((e.loaded / e.total) * 100));
+            onProgress?.(percent, e.loaded, e.total);
+          }
+        };
+      }
+
+      xhr.onload = () => {
+        if (abortSignal) {
+          abortSignal.removeEventListener("abort", handleAbort);
+        }
+        if (xhr.status >= 200 && xhr.status < 300) {
+          onProgress?.(100, file.size, file.size);
+          resolve(path);
+        } else {
+          let errMsg = `Upload failed with status ${xhr.status}`;
+          try {
+            const res = JSON.parse(xhr.responseText);
+            if (res?.message || res?.error) errMsg = res.message || res.error;
+          } catch {}
+          reject(new Error(errMsg));
+        }
+      };
+
+      xhr.onerror = () => {
+        if (abortSignal) {
+          abortSignal.removeEventListener("abort", handleAbort);
+        }
+        reject(new Error("Network error during file upload. Check your internet connection."));
+      };
+
+      xhr.onabort = () => {
+        if (abortSignal) {
+          abortSignal.removeEventListener("abort", handleAbort);
+        }
+        reject(new DOMException("Upload cancelled by user", "AbortError"));
+      };
+
+      xhr.send(file);
+    });
+  },
+
   // 10. Add Material with PDF Upload to Supabase Storage & Database Persistence
   async addMaterial(mat: {
     course_id?: string | undefined;
@@ -696,6 +798,8 @@ export const AcademicService = {
     allow_print?: boolean | undefined;
     add_watermark?: boolean | undefined;
     visible_to?: string | undefined;
+    onProgress?: ((percent: number, loaded: number, total: number) => void) | undefined;
+    abortSignal?: AbortSignal | undefined;
   }): Promise<MaterialItem> {
     // 1. Validation
     if (!mat.title.trim()) {
@@ -756,16 +860,30 @@ export const AcademicService = {
       const cleanFileName = mat.file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
       const storagePath = `${resolvedCourseId || "course"}/${resolvedSemId || "sem"}/${mat.subject_id}/unit-${mat.unit_number}/${Date.now()}_${cleanFileName}`;
 
-      const { error: upErr } = await supabase.storage
-        .from("notes")
-        .upload(storagePath, mat.file, {
-          contentType: "application/pdf",
-          upsert: false,
+      try {
+        await this.uploadStorageWithProgress({
+          bucket: "notes",
+          path: storagePath,
+          file: mat.file,
+          onProgress: mat.onProgress,
+          abortSignal: mat.abortSignal,
         });
+      } catch (err) {
+        if ((err as any)?.name === "AbortError") {
+          throw err;
+        }
+        // Fallback to standard Supabase client upload if XHR encountered network error
+        const { error: upErr } = await supabase.storage
+          .from("notes")
+          .upload(storagePath, mat.file, {
+            contentType: "application/pdf",
+            upsert: false,
+          });
 
-      if (upErr) {
-        console.error("Storage upload to 'notes' failed:", upErr);
-        throw new Error(`Storage upload failed: ${upErr.message}`);
+        if (upErr) {
+          console.error("Storage upload to 'notes' failed:", upErr);
+          throw new Error(`Storage upload failed: ${upErr.message}`);
+        }
       }
 
       uploadedStoragePath = storagePath;
@@ -894,6 +1012,8 @@ export const AcademicService = {
       allow_print?: boolean | undefined;
       add_watermark?: boolean | undefined;
       visible_to?: string | undefined;
+      onProgress?: ((percent: number, loaded: number, total: number) => void) | undefined;
+      abortSignal?: AbortSignal | undefined;
     },
   ): Promise<{ success: boolean; error?: string }> {
     let newStoragePath: string | null = null;
@@ -927,15 +1047,28 @@ export const AcademicService = {
         const uNum = updates.unit_number || existing?.unit_number || 1;
         newStoragePath = `${cId}/${sId}/${subId}/unit-${uNum}/${Date.now()}_${cleanName}`;
 
-        const { error: upErr } = await supabase.storage
-          .from("notes")
-          .upload(newStoragePath, updates.file, {
-            contentType: "application/pdf",
-            upsert: false,
+        try {
+          await this.uploadStorageWithProgress({
+            bucket: "notes",
+            path: newStoragePath,
+            file: updates.file,
+            onProgress: updates.onProgress,
+            abortSignal: updates.abortSignal,
           });
+        } catch (err) {
+          if ((err as any)?.name === "AbortError") {
+            throw err;
+          }
+          const { error: upErr } = await supabase.storage
+            .from("notes")
+            .upload(newStoragePath, updates.file, {
+              contentType: "application/pdf",
+              upsert: false,
+            });
 
-        if (upErr) {
-          return { success: false, error: `File replacement failed: ${upErr.message}` };
+          if (upErr) {
+            return { success: false, error: `File replacement failed: ${upErr.message}` };
+          }
         }
 
         updates.file_url = newStoragePath;

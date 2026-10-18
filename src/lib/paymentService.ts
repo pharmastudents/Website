@@ -55,6 +55,8 @@ export interface CreateOrderParams {
   semester?: number | undefined;
   items?: CartOrderParamItem[] | undefined;
   cartItems?: CartOrderParamItem[] | undefined;
+  studentName?: string | undefined;
+  studentEmail?: string | undefined;
 }
 
 export interface CreateOrderResult {

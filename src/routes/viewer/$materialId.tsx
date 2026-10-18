@@ -6,16 +6,26 @@ import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { AcademicService } from "@/lib/academicService";
 import { supabase } from "@/integrations/supabase/client";
+import { Logo } from "@/components/site/Logo";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import {
   ArrowLeft,
-  Maximize2,
-  Minimize2,
-  ShieldCheck,
   Lock,
-  BookOpen,
   FileText,
   Loader2,
   AlertCircle,
+  Bell,
+  ChevronDown,
+  User,
+  LogOut,
+  LayoutDashboard,
+  BookOpen,
 } from "lucide-react";
 import { MobileCanvasPdfViewer } from "@/components/pdf/MobileCanvasPdfViewer";
 
@@ -32,12 +42,12 @@ export default function ProtectedDocumentViewer() {
   const params = useParams({ strict: false }) as Record<string, string | undefined>;
   const materialId = params["materialId"] || "";
   const navigate = useNavigate();
-  const { db, student, hasAccess, logDocumentAccess, ready, session, isAdmin } = useStore();
+  const { db, student, hasAccess, logDocumentAccess, ready, session, isAdmin, logout } = useStore();
 
-  const [isFullscreen, setIsFullscreen] = useState(false);
   const [fetchedMaterial, setFetchedMaterial] = useState<any>(null);
   const [localPdfBlob, setLocalPdfBlob] = useState<Blob | null>(null);
   const [localPdfUrl, setLocalPdfUrl] = useState<string | null>(null);
+  const [driveEmbedUrl, setDriveEmbedUrl] = useState<string | null>(null);
   const [loadingPdf, setLoadingPdf] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [remotePurchased, setRemotePurchased] = useState<boolean>(false);
@@ -150,8 +160,7 @@ export default function ProtectedDocumentViewer() {
     }
   }, [materialId]);
 
-  // Load Real PDF directly from Supabase Storage Bucket ('notes')
-  // Using direct blob download so raw Supabase signed URL is never exposed to student
+  // Load Real PDF directly from Supabase Storage Bucket ('notes') or Google Drive
   useEffect(() => {
     let isMounted = true;
     let createdBlobUrl: string | null = null;
@@ -166,6 +175,7 @@ export default function ProtectedDocumentViewer() {
 
       setLoadingPdf(true);
       setLoadError(null);
+      setDriveEmbedUrl(null);
 
       try {
         const filePath =
@@ -173,28 +183,68 @@ export default function ProtectedDocumentViewer() {
           (material as any).file_url ||
           fetchedMaterial?.file_url;
 
-        if (!filePath) {
+        const driveUrl =
+          (material as any).driveUrl ||
+          (material as any).drive_url ||
+          fetchedMaterial?.drive_url;
+
+        // If no uploaded file but Google Drive URL is provided, open inside our app viewer
+        if (!filePath && driveUrl) {
+          const driveId = AcademicService.extractGoogleDriveId(driveUrl);
+          if (driveId) {
+            // Try fetching direct stream
+            try {
+              const directGdriveUrl = `https://drive.google.com/uc?export=download&id=${driveId}`;
+              const resp = await fetch(directGdriveUrl);
+              if (resp.ok) {
+                const b = await resp.blob();
+                if (b && b.size > 1000 && b.type.includes("pdf")) {
+                  const pdfBlob = new Blob([b], { type: "application/pdf" });
+                  createdBlobUrl = URL.createObjectURL(pdfBlob);
+                  if (isMounted) {
+                    setLocalPdfBlob(b);
+                    setLocalPdfUrl(createdBlobUrl);
+                    setLoadingPdf(false);
+                  }
+                  return;
+                }
+              }
+            } catch {
+              // Direct download blocked by CORS - use secure in-app iframe preview with overlay
+            }
+
+            if (isMounted) {
+              setDriveEmbedUrl(`https://drive.google.com/file/d/${driveId}/preview`);
+              setLoadingPdf(false);
+            }
+            return;
+          }
+        }
+
+        if (!filePath && !driveUrl) {
           if (isMounted) {
-            setLoadError("No PDF document has been uploaded for this study note yet.");
+            setLoadError("No PDF document or resource link has been attached for this study note yet.");
             setLoadingPdf(false);
           }
           return;
         }
 
-        const cleanPath = filePath.replace(/^notes\//, "");
+        const cleanPath = (filePath || "").replace(/^notes\//, "");
 
         // 1. Direct binary download from bucket 'notes'
         let blob: Blob | null = null;
-        try {
-          const { data: blobData, error: dlErr } = await supabase.storage
-            .from("notes")
-            .download(cleanPath);
+        if (cleanPath) {
+          try {
+            const { data: blobData, error: dlErr } = await supabase.storage
+              .from("notes")
+              .download(cleanPath);
 
-          if (!dlErr && blobData) {
-            blob = blobData;
+            if (!dlErr && blobData) {
+              blob = blobData;
+            }
+          } catch (e) {
+            console.warn("Direct bucket download fallback:", e);
           }
-        } catch (e) {
-          console.warn("Direct bucket download fallback:", e);
         }
 
         // 2. Fallback via secure signed URL if direct download restricted
@@ -203,7 +253,7 @@ export default function ProtectedDocumentViewer() {
           const access = await AcademicService.getMaterialAccess(
             material.id,
             userId ? { id: userId, role: session?.role || "student" } : null,
-            true, // Authorized override since frontend verified purchase
+            true,
           );
 
           if (access.url) {
@@ -219,8 +269,6 @@ export default function ProtectedDocumentViewer() {
         }
 
         // Convert binary into internal browser-origin blob URL
-        // Result: blob:http://localhost:8080/<uuid>
-        // Completely hides the external Supabase URL from the user!
         const pdfBlob = new Blob([blob], { type: "application/pdf" });
         createdBlobUrl = URL.createObjectURL(pdfBlob);
 
@@ -232,7 +280,7 @@ export default function ProtectedDocumentViewer() {
       } catch (err: any) {
         console.error("PDF loading error:", err);
         if (isMounted) {
-          setLoadError(err?.message || "Failed to load document from storage bucket.");
+          setLoadError(err?.message || "Failed to load document.");
           setLoadingPdf(false);
         }
       }
@@ -259,35 +307,32 @@ export default function ProtectedDocumentViewer() {
     }
   }, [material, student, isPurchased, logDocumentAccess]);
 
-  // Restrict right click & text selection on protected reader
-  const handleContextMenu = (e: React.MouseEvent) => {
-    e.preventDefault();
-    toast.warning("Protected Document: Right-click is restricted on licensed study materials.");
+  const handleLogout = () => {
+    logout();
+    void navigate({ to: "/" });
   };
 
-  const handleCopy = (e: React.ClipboardEvent) => {
-    e.preventDefault();
-    toast.warning("Protected Document: Text copying is restricted to prevent unauthorized distribution.");
-  };
+  const displayName = isAdmin
+    ? db.admin.name || "Admin"
+    : student?.name || "Ravi Kumar";
 
-  const toggleFullscreen = () => {
-    if (!document.fullscreenElement) {
-      void document.documentElement.requestFullscreen();
-      setIsFullscreen(true);
-    } else {
-      if (document.exitFullscreen) {
-        void document.exitFullscreen();
-        setIsFullscreen(false);
-      }
-    }
-  };
+  const displayInitials = isAdmin
+    ? "AD"
+    : (student?.name || "Ravi Kumar")
+        .split(" ")
+        .map((n) => n[0])
+        .slice(0, 2)
+        .join("")
+        .toUpperCase();
+
+  const courseSubtitle = `${subject?.name || "B.Pharm"} · Year ${material?.year || 2} · Semester ${material?.semester || 3}`;
 
   if (!ready) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-slate-950 text-slate-400">
+      <div className="flex min-h-screen items-center justify-center bg-[#f8fafc] text-slate-500">
         <div className="flex flex-col items-center gap-3">
-          <Loader2 className="size-8 animate-spin text-teal-500" />
-          <p className="text-xs">Verifying document access...</p>
+          <Loader2 className="size-8 animate-spin text-teal-600" />
+          <p className="text-xs font-semibold">Verifying document access...</p>
         </div>
       </div>
     );
@@ -295,12 +340,12 @@ export default function ProtectedDocumentViewer() {
 
   if (!material) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-slate-950 p-4 text-slate-100">
-        <div className="text-center">
-          <FileText className="size-12 mx-auto text-slate-600 mb-3" />
-          <h1 className="text-xl font-bold">Study Note Not Found</h1>
-          <p className="text-xs text-slate-400 mt-1">The requested document could not be located.</p>
-          <Button asChild className="mt-5 bg-teal-600 hover:bg-teal-700">
+      <div className="flex min-h-screen items-center justify-center bg-[#f8fafc] p-4 text-slate-800">
+        <div className="text-center max-w-sm bg-white p-8 rounded-2xl border border-slate-200 shadow-sm">
+          <FileText className="size-12 mx-auto text-slate-400 mb-3" />
+          <h1 className="text-lg font-bold text-slate-900">Study Note Not Found</h1>
+          <p className="text-xs text-slate-500 mt-1">The requested document could not be located in the curriculum database.</p>
+          <Button asChild className="mt-5 bg-teal-600 hover:bg-teal-700 text-white font-semibold">
             <Link to="/resources">Return to Resources</Link>
           </Button>
         </div>
@@ -309,17 +354,17 @@ export default function ProtectedDocumentViewer() {
   }
 
   // ────────────────────────────────────────────────────────────────────────────
-  // ACCESS GUARD: IF STUDENT HAS NOT PURCHASED, SHOW LOCKED SCREEN ONLY
+  // ACCESS GUARD: IF STUDENT HAS NOT PURCHASED, SHOW CLEAN LOCKED SCREEN
   // ────────────────────────────────────────────────────────────────────────────
   if (material.isPremium && !isPurchased) {
     return (
-      <div className="flex min-h-screen flex-col justify-between bg-slate-950 text-slate-100 p-4">
+      <div className="flex min-h-screen flex-col justify-between bg-[#f8fafc] text-slate-800 p-4">
         {/* Minimal header */}
         <div className="mx-auto flex w-full max-w-5xl items-center justify-between py-4">
           <Button
             variant="ghost"
             size="sm"
-            className="text-slate-400 hover:text-white hover:bg-slate-900"
+            className="text-slate-600 hover:text-slate-900 hover:bg-slate-100"
             onClick={() => {
               if (window.history.length > 1) {
                 window.history.back();
@@ -328,40 +373,40 @@ export default function ProtectedDocumentViewer() {
               }
             }}
           >
-            <ArrowLeft className="mr-2 size-4" /> Back
+            <ArrowLeft className="mr-2 size-4" /> Back to Notes
           </Button>
-          <Badge variant="outline" className="text-amber-400 border-amber-500/30 bg-amber-500/10 text-xs">
+          <Badge variant="outline" className="text-amber-600 border-amber-500/30 bg-amber-500/10 text-xs font-semibold">
             Premium Note Locked
           </Badge>
         </div>
 
         {/* Center Lock Card */}
         <div className="mx-auto w-full max-w-md my-auto">
-          <div className="rounded-3xl border border-slate-800 bg-slate-900/90 p-8 sm:p-10 text-center shadow-2xl backdrop-blur-md">
-            <div className="mx-auto flex size-16 items-center justify-center rounded-2xl bg-amber-500/10 text-amber-400 border border-amber-500/20 shadow-inner">
+          <div className="rounded-3xl border border-slate-200 bg-white p-8 sm:p-10 text-center shadow-lg">
+            <div className="mx-auto flex size-16 items-center justify-center rounded-2xl bg-amber-500/10 text-amber-500 border border-amber-500/20 shadow-inner">
               <Lock className="size-8" />
             </div>
 
-            <h1 className="mt-5 text-xl font-extrabold text-white">{material.title}</h1>
-            <p className="mt-1 text-xs font-semibold text-teal-400">
+            <h1 className="mt-5 text-xl font-extrabold text-slate-900">{material.title}</h1>
+            <p className="mt-1 text-xs font-semibold text-teal-600">
               {subject?.name || "B.Pharm Curriculum"} · Year {material.year} Sem {material.semester}
             </p>
-            <p className="mt-3 text-xs text-slate-400 leading-relaxed">
-              This verified study document is part of the licensed educational vault. Please purchase this note to view the full PDF in the protected reader.
+            <p className="mt-3 text-xs text-slate-500 leading-relaxed">
+              This verified study document is part of the licensed educational vault. Please purchase this note to view the full PDF in the reader.
             </p>
 
-            <div className="mt-6 rounded-2xl border border-slate-800 bg-slate-950/60 p-4 text-left text-xs space-y-2">
+            <div className="mt-6 rounded-2xl border border-slate-100 bg-slate-50 p-4 text-left text-xs space-y-2">
               <div className="flex justify-between items-center">
-                <span className="text-slate-400">Access Type:</span>
-                <span className="font-bold text-white">Full Multi-Page PDF</span>
+                <span className="text-slate-500">Access Type:</span>
+                <span className="font-bold text-slate-800">Full Multi-Page PDF</span>
               </div>
               <div className="flex justify-between items-center">
-                <span className="text-slate-400">Curriculum:</span>
-                <span className="font-semibold text-emerald-400">PCI Syllabus Aligned</span>
+                <span className="text-slate-500">Curriculum:</span>
+                <span className="font-semibold text-teal-700">PCI Syllabus Aligned</span>
               </div>
-              <div className="flex justify-between items-center border-t border-slate-800/80 pt-2">
-                <span className="text-slate-400">One-Time Price:</span>
-                <span className="text-base font-black text-white">{formatPrice(material.price)}</span>
+              <div className="flex justify-between items-center border-t border-slate-200/80 pt-2">
+                <span className="text-slate-500">Price:</span>
+                <span className="text-base font-black text-slate-900">{formatPrice(material.price)}</span>
               </div>
             </div>
 
@@ -369,7 +414,7 @@ export default function ProtectedDocumentViewer() {
               <Button
                 asChild
                 size="lg"
-                className="w-full h-11 bg-teal-600 hover:bg-teal-700 text-white font-bold rounded-xl shadow-lg"
+                className="w-full h-11 bg-teal-600 hover:bg-teal-700 text-white font-bold rounded-xl shadow-md"
               >
                 <Link
                   to="/checkout"
@@ -381,7 +426,7 @@ export default function ProtectedDocumentViewer() {
               <Button
                 asChild
                 variant="outline"
-                className="w-full h-10 border-slate-800 text-slate-300 hover:bg-slate-800 rounded-xl"
+                className="w-full h-10 border-slate-200 text-slate-700 hover:bg-slate-50 rounded-xl font-medium"
               >
                 <Link to="/resources">Browse Other Notes</Link>
               </Button>
@@ -390,147 +435,199 @@ export default function ProtectedDocumentViewer() {
         </div>
 
         {/* Footer */}
-        <div className="text-center text-[11px] text-slate-500 py-4">
+        <div className="text-center text-[11px] text-slate-400 py-4">
           © {new Date().getFullYear()} PharmaStudents.com · Protected Academic Portal
         </div>
       </div>
     );
   }
 
-  // Watermark text overlays on viewer
-  const studentIdentifier = student
-    ? `${student.name.toUpperCase()} • ${student.email.toUpperCase()} • ID: ${student.id.slice(0, 8)}`
-    : `LICENSED PREVIEW • PHARMASTUDENTS.COM`;
-
+  // ────────────────────────────────────────────────────────────────────────────
+  // MAIN PROTECTED READER VIEW (MATCHING REFERENCE DESIGN IMAGE)
+  // ────────────────────────────────────────────────────────────────────────────
   return (
-    <div
-      className="flex min-h-screen flex-col bg-slate-950 text-slate-100 select-none font-sans"
-      onContextMenu={handleContextMenu}
-      onCopy={handleCopy}
-    >
-      {/* Print protection */}
-      <style>{`
-        @media print {
-          body { display: none !important; }
-        }
-      `}</style>
+    <div className="flex min-h-screen flex-col bg-[#f8fafc] text-slate-800 select-none font-sans">
+      {/* ────────────────────────────────────────────────────────────────────────
+          Top Main Header (Clean, Compact, White with Logo, Title, Bell, Profile)
+          ──────────────────────────────────────────────────────────────────────── */}
+      <header className="sticky top-0 z-40 flex h-14 sm:h-16 w-full items-center justify-between border-b border-slate-200/80 bg-white px-3 sm:px-6 shadow-xs">
+        {/* Left: PharmaStudents Logo */}
+        <div className="flex items-center gap-3 shrink-0">
+          <Logo size="sm" />
+        </div>
 
-      {/* Top Protected Toolbar */}
-      <header className="sticky top-0 z-40 flex h-14 items-center justify-between border-b border-slate-800/90 bg-slate-950/95 backdrop-blur-md px-4">
-        {/* Left: Exit & Note Title */}
-        <div className="flex items-center gap-3 min-w-0">
+        {/* Center / Middle: Document Title and Course/Year/Semester */}
+        <div className="hidden md:flex flex-col items-center justify-center text-center px-4 min-w-0">
+          <h1 className="text-sm font-bold text-slate-900 truncate max-w-md lg:max-w-xl">
+            {material.title}
+          </h1>
+          <p className="text-[11px] font-medium text-slate-500 truncate">
+            {courseSubtitle}
+          </p>
+        </div>
+
+        {/* Right: Notifications Bell and Student Profile */}
+        <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+          {/* Notification Bell with red badge */}
           <Button
             variant="ghost"
-            size="sm"
-            className="text-slate-300 hover:bg-slate-900 hover:text-white shrink-0"
+            size="icon"
+            className="relative size-9 text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-full"
+            aria-label="Notifications"
             onClick={() => {
+              if (isAdmin) {
+                void navigate({ to: "/admin" });
+              } else {
+                void navigate({ to: "/dashboard" });
+              }
+            }}
+          >
+            <Bell className="size-4.5" />
+            <span className="absolute top-1.5 right-1.5 flex size-4 items-center justify-center rounded-full bg-red-500 text-[9px] font-bold text-white shadow-xs">
+              3
+            </span>
+          </Button>
+
+          {/* Student Profile Dropdown */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                className="flex items-center gap-2 rounded-full py-1 pl-1 pr-2 outline-none transition-colors hover:bg-slate-100 focus-visible:ring-2 focus-visible:ring-teal-500"
+                aria-label="Student profile menu"
+              >
+                <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-[#0d9488] text-xs font-bold text-white shadow-xs">
+                  {displayInitials}
+                </span>
+                <span className="hidden text-xs sm:text-sm font-semibold text-slate-800 sm:inline-block">
+                  {displayName}
+                </span>
+                <ChevronDown className="size-3.5 text-slate-400" />
+              </button>
+            </DropdownMenuTrigger>
+
+            <DropdownMenuContent
+              align="end"
+              sideOffset={8}
+              className="w-56 rounded-2xl border-slate-200 bg-white p-2 shadow-xl"
+            >
+              <div className="px-3 py-2">
+                <p className="text-xs font-bold text-slate-900 leading-tight">
+                  {displayName}
+                </p>
+                <p className="mt-0.5 text-[11px] text-slate-500 truncate">
+                  {student?.email || "student@pharmastudents.com"}
+                </p>
+              </div>
+
+              <DropdownMenuSeparator />
+
+              <DropdownMenuItem asChild className="rounded-xl cursor-pointer">
+                <Link
+                  to={isAdmin ? "/admin" : "/dashboard"}
+                  className="flex w-full items-center gap-2 px-3 py-2 text-xs font-medium text-slate-700 hover:text-slate-900"
+                >
+                  <LayoutDashboard className="size-4 text-slate-400" />
+                  <span>Dashboard</span>
+                </Link>
+              </DropdownMenuItem>
+
+              <DropdownMenuItem asChild className="rounded-xl cursor-pointer">
+                <Link
+                  to="/dashboard/my-resources"
+                  className="flex w-full items-center gap-2 px-3 py-2 text-xs font-medium text-slate-700 hover:text-slate-900"
+                >
+                  <BookOpen className="size-4 text-slate-400" />
+                  <span>My Unlocked Notes</span>
+                </Link>
+              </DropdownMenuItem>
+
+              <DropdownMenuSeparator />
+
+              <DropdownMenuItem
+                onClick={handleLogout}
+                className="rounded-xl cursor-pointer text-red-600 focus:bg-red-50 focus:text-red-700"
+              >
+                <div className="flex w-full items-center gap-2 px-3 py-2 text-xs font-medium">
+                  <LogOut className="size-4 text-red-500" />
+                  <span>Log out</span>
+                </div>
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+      </header>
+
+      {/* ────────────────────────────────────────────────────────────────────────
+          Main PDF Continuous Reader Body (Placed directly below header)
+          ──────────────────────────────────────────────────────────────────────── */}
+      <div className="flex-1 flex flex-col w-full">
+        {loadingPdf ? (
+          <div className="flex flex-1 flex-col items-center justify-center p-16 text-slate-500 bg-white min-h-[65vh]">
+            <Loader2 className="size-10 animate-spin text-teal-600 mb-3" />
+            <p className="text-sm font-bold text-slate-800">
+              Opening verified note from storage vault...
+            </p>
+            <p className="text-xs text-slate-400 mt-1">Preparing high-resolution textbook pages</p>
+          </div>
+        ) : loadError ? (
+          <div className="flex flex-1 flex-col items-center justify-center p-8 text-center max-w-md mx-auto my-12 bg-white rounded-2xl border border-slate-200 shadow-sm">
+            <div className="flex size-12 items-center justify-center rounded-2xl bg-rose-50 text-rose-500 border border-rose-200 mb-3">
+              <AlertCircle className="size-6" />
+            </div>
+            <h3 className="text-base font-bold text-slate-900">Document Display Issue</h3>
+            <p className="text-xs text-slate-500 leading-relaxed mt-1 mb-4">{loadError}</p>
+            <Button
+              onClick={() => window.location.reload()}
+              size="sm"
+              variant="outline"
+              className="text-xs border-slate-300"
+            >
+              Retry Loading
+            </Button>
+          </div>
+        ) : localPdfBlob || localPdfUrl ? (
+          <MobileCanvasPdfViewer
+            pdfBlob={localPdfBlob}
+            title={material.title}
+            courseInfo={courseSubtitle}
+            watermarkEnabled={watermarkEnabled}
+            watermarkText="PHARMASTUDENTS.COM"
+            onBack={() => {
               if (window.history.length > 1) {
                 window.history.back();
               } else {
                 void navigate({ to: "/dashboard/my-resources" });
               }
             }}
-          >
-            <ArrowLeft className="mr-1.5 size-4" /> Exit Reader
-          </Button>
-
-          <div className="hidden sm:block border-l border-slate-800 pl-3 min-w-0">
-            <p className="truncate text-xs font-bold text-white max-w-sm lg:max-w-md">
-              {material.title}
-            </p>
-            <p className="text-[10px] text-slate-400 truncate">
-              {subject?.name || "B.Pharm"} · Year {material.year} Sem {material.semester}
-            </p>
-          </div>
-        </div>
-
-        {/* Center: Viewer Title / Status */}
-        <div className="flex items-center gap-2">
-          <span className="hidden md:inline-flex items-center gap-1.5 text-xs font-semibold text-slate-400">
-            <BookOpen className="size-3.5 text-teal-400" />
-            <span>PCI Official Syllabus Reader</span>
-          </span>
-        </div>
-
-        {/* Right Controls */}
-        <div className="flex items-center gap-2 shrink-0">
-          {/* Fullscreen Toggle */}
-          <Button
-            variant="ghost"
-            size="icon"
-            className="size-8 text-slate-400 hover:bg-slate-900 hover:text-white"
-            onClick={toggleFullscreen}
-            aria-label="Toggle Fullscreen"
-          >
-            {isFullscreen ? <Minimize2 className="size-4" /> : <Maximize2 className="size-4" />}
-          </Button>
-
-          {/* Security Badge */}
-          <div className="hidden sm:flex items-center gap-1.5 rounded-full bg-emerald-500/10 px-2.5 py-1 text-[10px] font-bold text-emerald-400 border border-emerald-500/20">
-            <ShieldCheck className="size-3" />
-            <span>PROTECTED VIEWER</span>
-          </div>
-        </div>
-      </header>
-
-      {/* Main Document Reading Canvas */}
-      <main className="relative flex flex-1 flex-col items-center justify-start overflow-auto p-1 sm:p-4 bg-slate-900/90">
-        <div className="w-full max-w-5xl rounded-2xl bg-slate-950 border border-slate-800 shadow-2xl overflow-hidden">
-          {/* Document Content Viewport */}
-          <div className="relative z-10 w-full min-h-[60vh] flex flex-col items-center justify-center bg-slate-950">
-            {loadingPdf ? (
-              <div className="flex flex-col items-center gap-3 p-12 text-slate-400">
-                <Loader2 className="size-10 animate-spin text-teal-500" />
-                <p className="text-sm font-semibold text-slate-200">
-                  Opening verified note from storage bucket...
-                </p>
-                <p className="text-xs text-slate-500">Decrypting document and generating secure reader stream</p>
-              </div>
-            ) : loadError ? (
-              <div className="flex flex-col items-center gap-3 p-12 text-center max-w-md">
-                <div className="flex size-12 items-center justify-center rounded-2xl bg-rose-500/10 text-rose-400 border border-rose-500/20">
-                  <AlertCircle className="size-6" />
-                </div>
-                <h3 className="text-base font-bold text-white">Document Display Issue</h3>
-                <p className="text-xs text-slate-400 leading-relaxed">{loadError}</p>
-                <Button
-                  onClick={() => window.location.reload()}
-                  size="sm"
-                  variant="outline"
-                  className="mt-2 text-xs border-slate-700"
-                >
-                  Retry Loading
-                </Button>
-              </div>
-            ) : localPdfBlob || localPdfUrl ? (
-              // Renders actual multi-page PDF vectors directly via HTML5 Canvas (Full mobile & touch support)
-              // No Supabase URL is ever displayed or leaked!
-              <MobileCanvasPdfViewer
-                pdfBlob={localPdfBlob}
-                title={material.title}
-                watermarkEnabled={watermarkEnabled}
-                watermarkText="Pharmastudents.com"
-              />
-            ) : (
-              <div className="flex flex-col items-center gap-2 p-12 text-center text-slate-400">
-                <FileText className="size-12 text-slate-600 mb-1" />
-                <p className="text-sm font-semibold text-slate-300">No Document File Attached</p>
-                <p className="text-xs text-slate-500">Please check back later or contact administrator.</p>
+          />
+        ) : driveEmbedUrl ? (
+          <div className="relative flex-1 w-full bg-slate-900 flex flex-col items-center justify-center min-h-[calc(100vh-4rem)] select-none">
+            {/* Embedded Google Drive frame protected inside our app */}
+            <iframe
+              src={driveEmbedUrl}
+              className="w-full h-full min-h-[calc(100vh-4rem)] border-0"
+              title={material.title}
+              sandbox="allow-scripts allow-same-origin allow-forms"
+            />
+            {/* Security overlay with student identification watermark */}
+            {watermarkEnabled && (
+              <div className="pointer-events-none absolute inset-0 z-20 flex flex-col items-center justify-around overflow-hidden select-none opacity-25 rotate-[-25deg]">
+                {Array.from({ length: 6 }).map((_, i) => (
+                  <div key={i} className="text-center font-black tracking-widest text-slate-300 text-xs sm:text-base">
+                    PHARMASTUDENTS.COM • {student?.name || "AUTHENTICATED ACCESS"} • {student?.email || ""}
+                  </div>
+                ))}
               </div>
             )}
           </div>
-        </div>
-      </main>
-
-      {/* Security Footer Notice */}
-      <footer className="border-t border-slate-900 bg-slate-950 px-4 py-2 text-center text-[10px] text-slate-400 flex flex-col sm:flex-row items-center justify-between gap-1">
-        <span>
-          Licensed to <strong>{student ? student.name : "Authenticated User"}</strong> ({student ? student.email : "PharmaStudents"})
-        </span>
-        <span className="text-slate-500">
-          Protected Viewer • Unauthorized copying, downloading, or distribution is strictly prohibited.
-        </span>
-      </footer>
+        ) : (
+          <div className="flex flex-1 flex-col items-center justify-center p-12 text-center text-slate-500 bg-white min-h-[60vh]">
+            <FileText className="size-12 text-slate-300 mb-2" />
+            <p className="text-sm font-semibold text-slate-700">No Document File Attached</p>
+            <p className="text-xs text-slate-400 mt-1">Please check back later or contact support.</p>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

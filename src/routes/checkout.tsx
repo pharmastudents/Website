@@ -194,12 +194,16 @@ export default function CheckoutPage() {
                 title: item.title,
                 price: item.price,
               })),
+              studentName: student?.name,
+              studentEmail: student?.email,
             }
           : {
               materialId: productType === "material" ? productId : undefined,
               packageId: productType !== "material" ? productId : undefined,
               productId: productId,
               productType: productType as any,
+              studentName: student?.name,
+              studentEmail: student?.email,
             }
       );
 
@@ -230,8 +234,18 @@ export default function CheckoutPage() {
         return;
       }
 
-      // 2. Open Razorpay Checkout Modal
-      const keyId = orderRes.keyId || "rzp_test_placeholder_key";
+      const keyId =
+        orderRes.keyId && orderRes.keyId !== "rzp_test_placeholder_key"
+          ? orderRes.keyId
+          : (import.meta.env["VITE_RAZORPAY_KEY_ID"] || "");
+
+      if (!keyId) {
+        setStatus("failed");
+        const msg = "Payment configuration incomplete: Razorpay Key ID is not configured.";
+        setErrorMessage(msg);
+        toast.error(msg);
+        return;
+      }
 
       await PaymentService.openCheckout({
         keyId,
@@ -687,10 +701,14 @@ export default function CheckoutPage() {
                   ,{" "}
                   <Link to="/privacy" target="_blank" className="font-semibold text-primary hover:underline">
                     Privacy Policy
-                  </Link>{" "}
-                  and{" "}
+                  </Link>
+                  ,{" "}
                   <Link to="/refund" target="_blank" className="font-semibold text-primary hover:underline">
                     Refund Policy
+                  </Link>{" "}
+                  and{" "}
+                  <Link to="/shipping" target="_blank" className="font-semibold text-primary hover:underline">
+                    Shipping Policy
                   </Link>
                   .
                 </span>

@@ -20,6 +20,7 @@ import { Route as PackagesRouteImport } from './routes/packages'
 import { Route as PrivacyRouteImport } from './routes/privacy'
 import { Route as RefundRouteImport } from './routes/refund'
 import { Route as RegisterRouteImport } from './routes/register'
+import { Route as ShippingRouteImport } from './routes/shipping'
 import { Route as TermsRouteImport } from './routes/terms'
 import { Route as WhyRouteImport } from './routes/why'
 import { Route as AdminIndexRouteImport } from './routes/admin/index'
@@ -99,6 +100,11 @@ const RefundRoute = RefundRouteImport.update({
 const RegisterRoute = RegisterRouteImport.update({
   id: '/register',
   path: '/register',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ShippingRoute = ShippingRouteImport.update({
+  id: '/shipping',
+  path: '/shipping',
   getParentRoute: () => rootRouteImport,
 } as any)
 const TermsRoute = TermsRouteImport.update({
@@ -240,6 +246,7 @@ export interface FileRoutesByFullPath {
   '/privacy': typeof PrivacyRoute
   '/refund': typeof RefundRoute
   '/register': typeof RegisterRoute
+  '/shipping': typeof ShippingRoute
   '/terms': typeof TermsRoute
   '/why': typeof WhyRoute
   '/admin/login': typeof AdminLoginRoute
@@ -278,6 +285,7 @@ export interface FileRoutesByTo {
   '/privacy': typeof PrivacyRoute
   '/refund': typeof RefundRoute
   '/register': typeof RegisterRoute
+  '/shipping': typeof ShippingRoute
   '/terms': typeof TermsRoute
   '/why': typeof WhyRoute
   '/admin/login': typeof AdminLoginRoute
@@ -317,6 +325,7 @@ export interface FileRoutesById {
   '/privacy': typeof PrivacyRoute
   '/refund': typeof RefundRoute
   '/register': typeof RegisterRoute
+  '/shipping': typeof ShippingRoute
   '/terms': typeof TermsRoute
   '/why': typeof WhyRoute
   '/admin/login': typeof AdminLoginRoute
@@ -357,6 +366,7 @@ export interface FileRouteTypes {
     | '/privacy'
     | '/refund'
     | '/register'
+    | '/shipping'
     | '/terms'
     | '/why'
     | '/admin/login'
@@ -395,6 +405,7 @@ export interface FileRouteTypes {
     | '/privacy'
     | '/refund'
     | '/register'
+    | '/shipping'
     | '/terms'
     | '/why'
     | '/admin/login'
@@ -433,6 +444,7 @@ export interface FileRouteTypes {
     | '/privacy'
     | '/refund'
     | '/register'
+    | '/shipping'
     | '/terms'
     | '/why'
     | '/admin/login'
@@ -472,6 +484,7 @@ export interface RootRouteChildren {
   PrivacyRoute: typeof PrivacyRoute
   RefundRoute: typeof RefundRoute
   RegisterRoute: typeof RegisterRoute
+  ShippingRoute: typeof ShippingRoute
   TermsRoute: typeof TermsRoute
   WhyRoute: typeof WhyRoute
   AdminLoginRoute: typeof AdminLoginRoute
@@ -576,6 +589,13 @@ declare module '@tanstack/react-router' {
       path: '/register'
       fullPath: '/register'
       preLoaderRoute: typeof RegisterRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/shipping': {
+      id: '/shipping'
+      path: '/shipping'
+      fullPath: '/shipping'
+      preLoaderRoute: typeof ShippingRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/terms': {
@@ -768,6 +788,7 @@ const rootRouteChildren: RootRouteChildren = {
   PrivacyRoute: PrivacyRoute,
   RefundRoute: RefundRoute,
   RegisterRoute: RegisterRoute,
+  ShippingRoute: ShippingRoute,
   TermsRoute: TermsRoute,
   WhyRoute: WhyRoute,
   AdminLoginRoute: AdminLoginRoute,
