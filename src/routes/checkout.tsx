@@ -218,7 +218,8 @@ export default function CheckoutPage() {
           }
           : {
             materialId: productType === "material" ? productId : undefined,
-            packageId: productType !== "material" ? productId : undefined,
+            packageId: (productType === "package" || productType === "semester") ? productId : undefined,
+            subjectId: productType === "subject" ? productId : undefined,
             productId: productId,
             productType: productType as any,
             studentName: student?.name,

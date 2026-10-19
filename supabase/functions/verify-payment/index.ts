@@ -286,7 +286,8 @@ serve(async (req: Request) => {
           .select("id")
           .eq("subject_id", order.product_id);
         const subMatIds = (sMats || []).map((m: any) => String(m.id));
-        matIdsToUnlock = [order.product_id, ...subMatIds];
+        const storedMatIds = Array.isArray(order.material_ids) ? order.material_ids : [];
+        matIdsToUnlock = Array.from(new Set([order.product_id, ...storedMatIds, ...subMatIds]));
       } else if (order.product_id && order.product_id !== "cart") {
         matIdsToUnlock = [order.product_id];
       }

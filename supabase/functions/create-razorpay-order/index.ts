@@ -223,6 +223,161 @@ serve(async (req: Request) => {
         ? resolvedItems[0].title
         : `${resolvedItems.length} Study Notes Bundle`;
 
+    } else if (productType === "subject") {
+      // ── SUBJECT-LEVEL SALES CHECKOUT ───────────────────────────────────────
+      const targetSubId = productId || (body as any)?.subjectId || materialId;
+      if (!targetSubId) {
+        return new Response(
+          JSON.stringify({ error: "Missing subject ID." }),
+          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      const { data: subject, error: subErr } = await supabase
+        .from("subjects")
+        .select("id, name, code, price, is_premium, semester")
+        .eq("id", targetSubId)
+        .maybeSingle();
+
+      if (subErr || !subject) {
+        return new Response(
+          JSON.stringify({ error: "Subject not found in directory." }),
+          { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      // Check if student already owns this subject directly
+      const { data: existingSubOrder } = await supabase
+        .from("orders")
+        .select("id")
+        .eq("student_id", user.id)
+        .eq("product_id", subject.id)
+        .eq("status", "Paid")
+        .maybeSingle();
+
+      if (existingSubOrder || ownedMaterialIds.has(String(subject.id))) {
+        return new Response(
+          JSON.stringify({
+            error: "You already own this subject! All units are unlocked in your library.",
+            alreadyOwned: true,
+            productId: subject.id,
+          }),
+          { status: 409, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      // Check if student already owns the entire semester package
+      if (subject.semester) {
+        const { data: semOrders } = await supabase
+          .from("orders")
+          .select("id")
+          .eq("student_id", user.id)
+          .eq("status", "Paid")
+          .or(`product_id.eq.sem-${subject.semester},product_id.eq.pkg-sem-${subject.semester},product_title.ilike.%Semester ${subject.semester}%`);
+
+        if (semOrders && semOrders.length > 0) {
+          return new Response(
+            JSON.stringify({
+              error: `You already own Semester ${subject.semester} package which includes this subject!`,
+              alreadyOwned: true,
+              productId: subject.id,
+            }),
+            { status: 409, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          );
+        }
+      }
+
+      // Fetch all published materials in this subject
+      const { data: sMats } = await supabase
+        .from("materials")
+        .select("id")
+        .eq("subject_id", subject.id);
+      const subMatIds = (sMats || []).map((m: any) => String(m.id));
+
+      const subPrice = subject.is_premium ? Number(subject.price || 0) : 0;
+
+      // Handle Free Subject
+      if (!subject.is_premium || subPrice <= 0) {
+        const freeOrderId = `ord_free_sub_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+        const { error: freeOrderErr } = await supabase.from("orders").insert({
+          id: freeOrderId,
+          student_id: user.id,
+          student_name: resolvedStudentName,
+          student_email: resolvedStudentEmail || null,
+          amount: 0,
+          final_amount: 0,
+          total_amount: 0,
+          currency: "INR",
+          status: "Paid",
+          product_id: String(subject.id),
+          product_title: subject.name,
+          product_type: "subject",
+          material_ids: [String(subject.id), ...subMatIds],
+          gateway: "free",
+          order_date: new Date().toISOString(),
+          payment_date: new Date().toISOString(),
+        });
+
+        if (freeOrderErr) {
+          console.error("Free subject order insert failed:", freeOrderErr);
+          return new Response(
+            JSON.stringify({ error: "Failed to record free subject order." }),
+            { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          );
+        }
+
+        // Grant purchase for subject
+        await supabase.from("purchases").upsert({
+          id: `pur_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+          student_id: user.id,
+          material_id: String(subject.id),
+          order_id: freeOrderId,
+          amount: 0,
+          status: "unlocked",
+          payment_status: "free",
+          purchased_at: new Date().toISOString(),
+          created_at: new Date().toISOString(),
+        }, { onConflict: "student_id,material_id" });
+
+        // Grant purchases for all units/materials
+        for (const mid of subMatIds) {
+          await supabase.from("purchases").upsert({
+            id: `pur_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+            student_id: user.id,
+            material_id: mid,
+            order_id: freeOrderId,
+            amount: 0,
+            status: "unlocked",
+            payment_status: "free",
+            purchased_at: new Date().toISOString(),
+            created_at: new Date().toISOString(),
+          }, { onConflict: "student_id,material_id" });
+        }
+
+        return new Response(
+          JSON.stringify({
+            success: true,
+            ok: true,
+            isFree: true,
+            orderId: freeOrderId,
+            productTitle: subject.name,
+            message: "Free subject has been unlocked in your library.",
+          }),
+          { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      primaryTitle = subject.name;
+      effectiveProductId = String(subject.id);
+      effectiveProductType = "subject";
+      packageMaterialsMap.set(String(subject.id), [String(subject.id), ...subMatIds]);
+
+      resolvedItems.push({
+        materialId: String(subject.id),
+        title: subject.name,
+        price: subPrice,
+      });
+
     } else if (productType === "package" || productType === "semester" || packageId) {
       // ── SEMESTER PACKAGE / BUNDLE CHECKOUT ────────────────────────────────
       const targetPkgId = packageId || productId;
@@ -499,9 +654,13 @@ serve(async (req: Request) => {
       created_at: new Date().toISOString(),
     }));
 
-    await supabase.from("order_items").insert(orderItemsRows).catch((e: any) => {
-      console.warn("order_items insert warning:", e?.message);
-    });
+    const { error: orderItemsErr } = await supabase
+      .from("order_items")
+      .insert(orderItemsRows);
+
+    if (orderItemsErr) {
+      console.warn("order_items insert warning:", orderItemsErr?.message);
+    }
 
     // 7. Verify Razorpay Server Credentials & Create Razorpay Server Order
     const { keyId, keySecret } = getRazorpayCredentials();

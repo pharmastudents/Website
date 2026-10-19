@@ -22,6 +22,8 @@ export interface Semester {
   academic_year_id?: string | null;
   semester_number: number;
   title: string;
+  price?: number;
+  original_price?: number;
   is_active: boolean;
   created_at?: string;
   subjects_count?: number;
@@ -168,6 +170,7 @@ export const AcademicService = {
         materialsRes,
         purchasesRes,
         profilesRes,
+        packagesRes,
       ] = await Promise.all([
         supabase.from("courses").select("*").order("display_order", { ascending: true }),
         supabase.from("semesters").select("*").order("semester_number", { ascending: true }),
@@ -176,6 +179,7 @@ export const AcademicService = {
         supabase.from("materials").select("*").order("created_at", { ascending: false }),
         supabase.from("purchases").select("id, material_id, student_id, amount, status"),
         supabase.from("profiles").select("id, role").neq("role", "admin"),
+        supabase.from("packages").select("id, price, original_price, semester, type"),
       ]);
 
       const rawCourses = coursesRes.data || [];
@@ -184,7 +188,19 @@ export const AcademicService = {
       const rawUnits = unitsRes.data || [];
       const rawMaterials = materialsRes.data || [];
       const rawPurchases = purchasesRes.data || [];
+      const rawPackages = packagesRes.data || [];
       const registeredStudentsCount = profilesRes.data?.length || 0;
+
+      // Map package price and original_price by package ID (which equals semester.id)
+      const packagePriceById = new Map<string, { price: number; original_price?: number }>();
+      rawPackages.forEach((p: any) => {
+        if (p.id && p.price != null) {
+          packagePriceById.set(String(p.id), {
+            price: Number(p.price),
+            original_price: p.original_price != null ? Number(p.original_price) : undefined,
+          });
+        }
+      });
 
       // Map purchases count per material
       const purchasesByMaterial: Record<string, number> = {};
@@ -302,12 +318,17 @@ export const AcademicService = {
           (m) => m.semester_id === s.id || semSubs.some((sub) => sub.id === m.subject_id),
         );
         const semPurchases = semMats.reduce((acc, m) => acc + (m.students_count || 0), 0);
+        const pkgInfo = packagePriceById.get(String(s.id));
+        const semPrice = pkgInfo?.price != null ? pkgInfo.price : ((s as any).price != null ? Number((s as any).price) : undefined);
+        const semOrigPrice = pkgInfo?.original_price != null ? pkgInfo.original_price : ((s as any).original_price != null ? Number((s as any).original_price) : undefined);
         return {
           id: s.id,
           course_id: s.course_id,
           academic_year_id: s.academic_year_id,
           semester_number: s.semester_number,
           title: s.title || `Semester ${s.semester_number}`,
+          price: semPrice,
+          original_price: semOrigPrice,
           is_active: s.is_active ?? true,
           created_at: s.created_at,
           subjects_count: semSubs.length,
@@ -469,23 +490,32 @@ export const AcademicService = {
         throw new Error(`Failed to create semesters: ${sErr.message}`);
       }
 
-      // Auto-create Packages for checkout/orders and sync pricing safely
-      const packagesPayload = (dbSems || []).map((s: any) => ({
-        id: s.id,
-        course_id: courseId,
-        semester: s.semester_number,
-        title: `${dbCourse.name} - ${s.title}`,
-        description: `Complete semester study package for ${dbCourse.name} ${s.title}`,
-        price: semPrice,
-        original_price: semPrice * 2,
-        type: "semester",
-        is_active: true,
-      }));
-
+      // Auto-create Packages for checkout/orders and sync pricing safely via server-side service
       try {
-        await supabase.from("packages").upsert(packagesPayload, { onConflict: "id" });
+        await supabase.functions.invoke("sync-course-packages", {
+          body: {
+            courseId,
+            defaultSemesterPrice: semPrice,
+          },
+        });
       } catch (pkgErr) {
-        console.warn("Packages upsert notice:", pkgErr);
+        console.warn("Packages sync via edge function notice:", pkgErr);
+        // Fallback: direct insert without non-existent columns
+        const packagesPayload = (dbSems || []).map((s: any) => ({
+          id: String(s.id),
+          semester: s.semester_number,
+          title: `${dbCourse.name} - ${s.title}`,
+          description: `Complete semester study package for ${dbCourse.name} ${s.title}`,
+          price: semPrice,
+          original_price: semPrice * 2,
+          type: "semester",
+          is_active: true,
+          material_ids: [],
+          features: [],
+        }));
+        try {
+          await supabase.from("packages").upsert(packagesPayload, { onConflict: "id" });
+        } catch { }
       }
 
       // Try updating semesters.price safely if column exists
@@ -545,35 +575,123 @@ export const AcademicService = {
   // 3. Edit Course
   async updateCourse(
     id: string,
-    updates: Partial<Pick<Course, "name" | "description" | "duration_years" | "is_active" | "default_semester_price">>,
+    updates: Partial<Pick<Course, "name" | "code" | "description" | "duration_years" | "total_semesters" | "is_active" | "default_semester_price">>,
   ): Promise<{ success: boolean; error?: string }> {
     const semPrice = updates.default_semester_price;
     const coursePayload: any = { ...updates };
 
-    const { error } = await supabase
-      .from("courses")
-      .update(coursePayload)
-      .eq("id", id);
-    if (error) {
-      console.error("Supabase updateCourse error:", error);
-      return { success: false, error: error.message };
-    }
+    let syncSucceeded = false;
+    let syncErrorMessage: string | undefined;
 
-    // Sync updated semester package pricing if provided
-    if (semPrice !== undefined && semPrice >= 0) {
+    // 1. If semester price is provided, invoke server-side sync-course-packages (handles RLS bypass and updates both courses and packages)
+    if (semPrice !== undefined && semPrice >= 1) {
       try {
-        const { data: sems } = await supabase.from("semesters").select("id").eq("course_id", id);
-        if (sems && sems.length > 0) {
-          const semIds = sems.map((s) => s.id);
-          await supabase.from("packages").update({ price: semPrice, original_price: semPrice * 2 }).in("id", semIds);
-          try {
-            await supabase.from("semesters").update({ price: semPrice, original_price: semPrice * 2 } as any).eq("course_id", id);
-          } catch { }
+        const { data: edgeData, error: edgeErr } = await supabase.functions.invoke("sync-course-packages", {
+          body: {
+            courseId: id,
+            defaultSemesterPrice: semPrice,
+            courseUpdates: coursePayload,
+          },
+        });
+
+        if (!edgeErr && edgeData?.success) {
+          syncSucceeded = true;
+        } else if (edgeErr) {
+          syncErrorMessage = edgeErr.message;
         }
-      } catch (pkgErr) {
-        console.warn("Could not sync updated semester prices:", pkgErr);
+      } catch (err: any) {
+        syncErrorMessage = err?.message;
       }
     }
+
+    // 2. Direct database update / sync if edge function didn't complete it
+    if (!syncSucceeded) {
+      // Try atomic RPC if available
+      if (semPrice !== undefined && semPrice >= 1) {
+        try {
+          const { data: rpcData, error: rpcErr } = await supabase.rpc("sync_course_semester_packages" as any, {
+            p_course_id: id,
+            p_price: semPrice,
+          });
+          if (!rpcErr && (rpcData as any)?.success) {
+            syncSucceeded = true;
+          }
+        } catch { }
+      }
+
+      // Update course directly
+      const { error: courseErr } = await supabase
+        .from("courses")
+        .update(coursePayload)
+        .eq("id", id);
+
+      if (courseErr) {
+        console.error("Supabase updateCourse error:", courseErr);
+        return { success: false, error: courseErr.message };
+      }
+
+      // Sync semester packages directly matching semesters.id::text for this course
+      if (semPrice !== undefined && semPrice >= 1) {
+        try {
+          const { data: sems, error: semErr } = await supabase
+            .from("semesters")
+            .select("id")
+            .eq("course_id", id);
+
+          if (semErr) {
+            return {
+              success: false,
+              error: `Course saved, but failed to fetch semesters for package price sync: ${semErr.message}`,
+            };
+          }
+
+          if (sems && sems.length > 0) {
+            const semIds = sems.map((s) => String(s.id));
+            // Preserve existing package IDs, purchases, orders, original_price and only update price
+            const { error: pkgErr } = await supabase
+              .from("packages")
+              .update({ price: semPrice })
+              .in("id", semIds);
+
+            if (pkgErr) {
+              return {
+                success: false,
+                error: `Course saved, but failed to sync semester packages (${pkgErr.message}).`,
+              };
+            }
+
+            try {
+              await supabase
+                .from("semesters")
+                .update({ price: semPrice } as any)
+                .eq("course_id", id);
+            } catch { }
+            syncSucceeded = true;
+          }
+        } catch (pkgErr: any) {
+          return {
+            success: false,
+            error: `Course saved, but semester packages price sync failed: ${pkgErr?.message || pkgErr}`,
+          };
+        }
+      }
+    }
+
+    // 3. Immediately refresh local cache
+    try {
+      const cache = loadLocalCache();
+      const updatedCourses = cache.courses.map((c) =>
+        c.id === id ? { ...c, ...updates, default_semester_price: semPrice ?? c.default_semester_price } : c
+      );
+      const updatedSemesters = cache.semesters.map((s) =>
+        s.course_id === id ? { ...s, price: semPrice ?? s.price } : s
+      );
+      saveLocalCache({
+        ...cache,
+        courses: updatedCourses,
+        semesters: updatedSemesters,
+      });
+    } catch { }
 
     return { success: true };
   },

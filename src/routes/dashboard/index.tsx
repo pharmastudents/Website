@@ -198,11 +198,33 @@ export default function DashboardPage() {
           (o.product_id === matId || (Array.isArray(o.material_ids) && o.material_ids.includes(matId))),
       );
       if (packageOrder) return true;
+
+      // Check if parent subject is purchased
+      const targetMat = (semesterMaterials || dbMaterials || []).find((m: any) => m.id === matId);
+      const subId = targetMat?.subject_id || targetMat?.subjectId;
+      if (subId) {
+        const subPurch = dbPurchases.some(
+          (p) =>
+            p.material_id === subId &&
+            ((p.status || "").toLowerCase() === "unlocked" ||
+              (p.status || "").toLowerCase() === "paid" ||
+              (p.status || "").toLowerCase() === "active"),
+        );
+        if (subPurch) return true;
+
+        const subOrder = dbOrders.some(
+          (o) =>
+            o.status?.toLowerCase() === "paid" &&
+            (o.product_id === subId || (Array.isArray(o.material_ids) && o.material_ids.includes(subId))),
+        );
+        if (subOrder) return true;
+      }
+
       const storeMat = db.materials.find((m) => m.id === matId);
       if (storeMat && hasAccess(storeMat)) return true;
       return false;
     },
-    [dbPurchases, dbOrders, db.materials, hasAccess],
+    [dbPurchases, dbOrders, db.materials, semesterMaterials, dbMaterials, hasAccess],
   );
 
   // Distinct set of purchased material IDs for student

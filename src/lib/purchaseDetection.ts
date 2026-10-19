@@ -78,6 +78,30 @@ export async function checkMaterialOwnership(
         };
       }
 
+      // 3. Check if student bought the semester package that includes this subject
+      const { data: subData } = await supabase
+        .from("subjects")
+        .select("semester")
+        .eq("id", productId)
+        .maybeSingle();
+
+      if (subData?.semester) {
+        const { data: semOrders } = await supabase
+          .from("orders")
+          .select("id, payment_date, order_date")
+          .eq("student_id", studentId)
+          .eq("status", "Paid")
+          .or(`product_id.eq.sem-${subData.semester},product_id.eq.pkg-sem-${subData.semester},product_title.ilike.%Semester ${subData.semester}%`);
+
+        if (semOrders && semOrders.length > 0) {
+          return {
+            state: "purchased",
+            orderId: semOrders[0].id,
+            purchasedAt: semOrders[0].payment_date || semOrders[0].order_date,
+          };
+        }
+      }
+
       return { state: "not_purchased" };
     }
 

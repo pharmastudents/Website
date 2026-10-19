@@ -487,33 +487,48 @@ export type Database = {
       packages: {
         Row: {
           id: string
+          title: string | null
+          description: string | null
           type: string | null
           year: number | null
           semester: number | null
           price: number | null
           original_price: number | null
-          created_at: string
+          badge: string | null
+          material_ids: string[] | null
+          features: string[] | null
           is_active: boolean | null
+          created_at: string
         }
         Insert: {
           id?: string
+          title?: string | null
+          description?: string | null
           type?: string | null
           year?: number | null
           semester?: number | null
           price?: number | null
           original_price?: number | null
-          created_at?: string
+          badge?: string | null
+          material_ids?: string[] | null
+          features?: string[] | null
           is_active?: boolean | null
+          created_at?: string
         }
         Update: {
           id?: string
+          title?: string | null
+          description?: string | null
           type?: string | null
           year?: number | null
           semester?: number | null
           price?: number | null
           original_price?: number | null
-          created_at?: string
+          badge?: string | null
+          material_ids?: string[] | null
+          features?: string[] | null
           is_active?: boolean | null
+          created_at?: string
         }
         Relationships: []
       }

@@ -50,6 +50,7 @@ export interface CartOrderParamItem {
 export interface CreateOrderParams {
   materialId?: string | undefined;
   packageId?: string | undefined;
+  subjectId?: string | undefined;
   productId?: string | undefined;
   productType?: "material" | "package" | "semester" | "year" | "cart" | "subject" | undefined;
   semester?: number | undefined;
@@ -104,7 +105,7 @@ export const PaymentService = {
       data = res.data;
       error = res.error;
 
-      // If create-order returned 404 or error, fallback to create-razorpay-order
+      // If create-order returned 404, fallback to create-razorpay-order
       if (error && (error.status === 404 || error.message?.includes("not found"))) {
         const fallbackRes = await supabase.functions.invoke("create-razorpay-order", {
           body: params,
@@ -115,9 +116,17 @@ export const PaymentService = {
 
       if (error) {
         console.warn("create-order function notice:", error);
+        let errorMsg = error.message || "Failed to create payment order.";
+        if (error.context && typeof error.context.json === "function") {
+          try {
+            const errJson = await error.context.json();
+            if (errJson?.error) errorMsg = errJson.error;
+            else if (errJson?.message) errorMsg = errJson.message;
+          } catch (_) {}
+        }
         return {
           ok: false,
-          error: error.message || "Failed to create payment order.",
+          error: errorMsg,
         };
       }
 
@@ -176,7 +185,15 @@ export const PaymentService = {
       }
 
       if (error) {
-        return { ok: false, error: error.message || "Server verification failed." };
+        let errorMsg = error.message || "Server verification failed.";
+        if (error.context && typeof error.context.json === "function") {
+          try {
+            const errJson = await error.context.json();
+            if (errJson?.error) errorMsg = errJson.error;
+            else if (errJson?.message) errorMsg = errJson.message;
+          } catch (_) {}
+        }
+        return { ok: false, error: errorMsg };
       }
 
       if (data?.error || data?.success === false) {
