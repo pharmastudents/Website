@@ -114,6 +114,7 @@ export type Database = {
           type: string | null
           description: string | null
           duration_years: number
+          default_semester_price: number | null
           is_active: boolean
           display_order: number | null
           created_at: string
@@ -125,6 +126,7 @@ export type Database = {
           type?: string | null
           description?: string | null
           duration_years?: number
+          default_semester_price?: number | null
           is_active?: boolean
           display_order?: number | null
           created_at?: string
@@ -136,6 +138,7 @@ export type Database = {
           type?: string | null
           description?: string | null
           duration_years?: number
+          default_semester_price?: number | null
           is_active?: boolean
           display_order?: number | null
           created_at?: string
@@ -176,6 +179,8 @@ export type Database = {
           academic_year_id: string | null
           semester_number: number
           title: string
+          price: number | null
+          original_price: number | null
           is_active: boolean
           created_at: string
         }
@@ -185,6 +190,8 @@ export type Database = {
           academic_year_id?: string | null
           semester_number: number
           title: string
+          price?: number | null
+          original_price?: number | null
           is_active?: boolean
           created_at?: string
         }
@@ -194,6 +201,8 @@ export type Database = {
           academic_year_id?: string | null
           semester_number?: number
           title?: string
+          price?: number | null
+          original_price?: number | null
           is_active?: boolean
           created_at?: string
         }
@@ -212,6 +221,9 @@ export type Database = {
           display_order: number | null
           is_active: boolean
           created_at: string
+          thumbnail_url: string | null
+          price: number
+          is_premium: boolean
         }
         Insert: {
           id?: string
@@ -225,6 +237,9 @@ export type Database = {
           display_order?: number | null
           is_active?: boolean
           created_at?: string
+          thumbnail_url?: string | null
+          price?: number
+          is_premium?: boolean
         }
         Update: {
           id?: string
@@ -238,6 +253,9 @@ export type Database = {
           display_order?: number | null
           is_active?: boolean
           created_at?: string
+          thumbnail_url?: string | null
+          price?: number
+          is_premium?: boolean
         }
         Relationships: []
       }
@@ -251,6 +269,10 @@ export type Database = {
           display_order: number | null
           is_active: boolean
           created_at: string
+          file_url: string | null
+          file_name: string | null
+          file_size: number | string | null
+          is_premium: boolean
         }
         Insert: {
           id?: string
@@ -261,6 +283,10 @@ export type Database = {
           display_order?: number | null
           is_active?: boolean
           created_at?: string
+          file_url?: string | null
+          file_name?: string | null
+          file_size?: number | string | null
+          is_premium?: boolean
         }
         Update: {
           id?: string
@@ -271,6 +297,10 @@ export type Database = {
           display_order?: number | null
           is_active?: boolean
           created_at?: string
+          file_url?: string | null
+          file_name?: string | null
+          file_size?: number | string | null
+          is_premium?: boolean
         }
         Relationships: []
       }

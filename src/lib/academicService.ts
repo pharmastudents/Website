@@ -8,6 +8,7 @@ export interface Course {
   description?: string | null;
   duration_years: number;
   total_semesters: number;
+  default_semester_price?: number;
   is_active: boolean;
   display_order: number;
   created_at?: string;
@@ -44,6 +45,9 @@ export interface SubjectItem {
   units_count?: number;
   materials_count?: number;
   purchased_count?: number;
+  thumbnail_url?: string | null;
+  price?: number;
+  is_premium?: boolean;
 }
 
 export interface UnitItem {
@@ -57,6 +61,10 @@ export interface UnitItem {
   created_at?: string;
   materials_count?: number;
   purchased_count?: number;
+  file_url?: string | null;
+  file_name?: string | null;
+  file_size?: number | string | null;
+  is_premium?: boolean;
 }
 
 export interface SecuritySettings {
@@ -129,7 +137,7 @@ function loadLocalCache(): AcademicDataStore {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed.courses)) return parsed;
     }
-  } catch {}
+  } catch { }
   return {
     courses: [],
     semesters: [],
@@ -144,7 +152,7 @@ function loadLocalCache(): AcademicDataStore {
 function saveLocalCache(data: AcademicDataStore) {
   try {
     localStorage.setItem(LOCAL_CACHE_KEY, JSON.stringify(data));
-  } catch {}
+  } catch { }
 }
 
 export const AcademicService = {
@@ -187,9 +195,13 @@ export const AcademicService = {
       });
 
       // Construct Units
-      const units: UnitItem[] = rawUnits.map((u) => {
+      const units: UnitItem[] = rawUnits.map((u: any) => {
         const uMats = rawMaterials.filter((m) => m.unit_id === u.id);
         const uPurchases = uMats.reduce((acc, m) => acc + (purchasesByMaterial[m.id] || 0), 0);
+        const uFileUrl = u.file_url || (uMats.length > 0 ? uMats[0].file_url : null);
+        const uFileName = u.file_name || (uMats.length > 0 ? uMats[0].file_name : null);
+        const uFileSize = u.file_size || (uMats.length > 0 ? uMats[0].file_size : null);
+        const uIsPrem = u.is_premium === true || uMats.some((m: any) => m.is_premium === true || (typeof m.price === "number" && m.price > 0));
         return {
           id: u.id,
           subject_id: u.subject_id,
@@ -201,6 +213,10 @@ export const AcademicService = {
           created_at: u.created_at,
           materials_count: uMats.length,
           purchased_count: uPurchases,
+          file_url: uFileUrl,
+          file_name: uFileName,
+          file_size: uFileSize,
+          is_premium: Boolean(uIsPrem),
         };
       });
 
@@ -211,6 +227,8 @@ export const AcademicService = {
         const subPurchases = subMats.reduce((acc, m) => acc + (purchasesByMaterial[m.id] || 0), 0);
         const semNum = sub.semester || sub.year || 1;
         const calcYear = sub.year || Math.ceil(semNum / 2) || 1;
+        const isPrem = sub.is_premium === true || Boolean(sub.is_premium) || (Number(sub.price) > 0);
+        const subPrice = sub.price !== null && sub.price !== undefined ? Number(sub.price) : 0;
         return {
           id: sub.id,
           course_id: sub.course_id || "",
@@ -227,6 +245,9 @@ export const AcademicService = {
           units_count: subUnits.length,
           materials_count: subMats.length,
           purchased_count: subPurchases,
+          thumbnail_url: sub.thumbnail_url || null,
+          price: subPrice,
+          is_premium: isPrem,
         };
       });
 
@@ -311,6 +332,7 @@ export const AcademicService = {
           description: c.description || "",
           duration_years: c.duration_years || 4,
           total_semesters: cSems.length || (c.duration_years || 4) * 2,
+          default_semester_price: Number((c as any).default_semester_price ?? cSems[0]?.price ?? 399),
           is_active: c.is_active ?? true,
           display_order: c.display_order ?? 1,
           created_at: c.created_at,
@@ -346,6 +368,7 @@ export const AcademicService = {
     duration_years: number;
     total_semesters: number;
     description?: string | undefined;
+    default_semester_price?: number | undefined;
     is_active?: boolean | undefined;
     display_order?: number | undefined;
   }): Promise<Course & { course: Course; semesters: Semester[] }> {
@@ -358,7 +381,7 @@ export const AcademicService = {
       "CRS";
 
     const courseId = crypto.randomUUID();
-    const coursePayload = {
+    const coursePayload: any = {
       id: courseId,
       name: course.name,
       code: cleanCode,
@@ -367,6 +390,9 @@ export const AcademicService = {
       is_active: course.is_active ?? true,
       display_order: course.display_order ?? 1,
     };
+    if (course.default_semester_price !== undefined) {
+      coursePayload.default_semester_price = course.default_semester_price;
+    }
 
     // Step 1: Insert the course and retrieve its id
     const { data: dbCourse, error: cErr } = await supabase
@@ -417,6 +443,7 @@ export const AcademicService = {
       // Step 4: Insert each semester with course_id, academic_year_id, semester_number, and title
       const semsPerYear = Math.max(1, Math.ceil(course.total_semesters / course.duration_years));
       const semInserts = [];
+      const semPrice = Number(course.default_semester_price || 399);
 
       for (let i = 1; i <= course.total_semesters; i++) {
         const yearNum = Math.min(course.duration_years, Math.ceil(i / semsPerYear));
@@ -442,12 +469,41 @@ export const AcademicService = {
         throw new Error(`Failed to create semesters: ${sErr.message}`);
       }
 
+      // Auto-create Packages for checkout/orders and sync pricing safely
+      const packagesPayload = (dbSems || []).map((s: any) => ({
+        id: s.id,
+        course_id: courseId,
+        semester: s.semester_number,
+        title: `${dbCourse.name} - ${s.title}`,
+        description: `Complete semester study package for ${dbCourse.name} ${s.title}`,
+        price: semPrice,
+        original_price: semPrice * 2,
+        type: "semester",
+        is_active: true,
+      }));
+
+      try {
+        await supabase.from("packages").upsert(packagesPayload, { onConflict: "id" });
+      } catch (pkgErr) {
+        console.warn("Packages upsert notice:", pkgErr);
+      }
+
+      // Try updating semesters.price safely if column exists
+      try {
+        await supabase
+          .from("semesters")
+          .update({ price: semPrice, original_price: semPrice * 2 } as any)
+          .eq("course_id", courseId);
+      } catch { }
+
       const createdSemesters: Semester[] = (dbSems || []).map((s) => ({
         id: s.id,
         course_id: courseId,
         academic_year_id: s.academic_year_id,
         semester_number: s.semester_number,
         title: s.title,
+        price: semPrice,
+        original_price: semPrice * 2,
         is_active: s.is_active,
         created_at: s.created_at,
         subjects_count: 0,
@@ -461,6 +517,7 @@ export const AcademicService = {
         code: dbCourse.code,
         duration_years: dbCourse.duration_years,
         total_semesters: createdSemesters.length,
+        default_semester_price: semPrice,
         description: dbCourse.description || "",
         is_active: dbCourse.is_active ?? true,
         display_order: dbCourse.display_order ?? 1,
@@ -477,6 +534,7 @@ export const AcademicService = {
     } catch (stepErr: any) {
       // Step 5: Handle errors without leaving partial records
       console.error("Course creation failed during dependent records setup, rolling back:", stepErr);
+      await supabase.from("packages").delete().eq("course_id", courseId);
       await supabase.from("semesters").delete().eq("course_id", courseId);
       await supabase.from("academic_years").delete().eq("course_id", courseId);
       await supabase.from("courses").delete().eq("id", courseId);
@@ -487,16 +545,36 @@ export const AcademicService = {
   // 3. Edit Course
   async updateCourse(
     id: string,
-    updates: Partial<Pick<Course, "name" | "description" | "duration_years" | "is_active">>,
+    updates: Partial<Pick<Course, "name" | "description" | "duration_years" | "is_active" | "default_semester_price">>,
   ): Promise<{ success: boolean; error?: string }> {
+    const semPrice = updates.default_semester_price;
+    const coursePayload: any = { ...updates };
+
     const { error } = await supabase
       .from("courses")
-      .update(updates)
+      .update(coursePayload)
       .eq("id", id);
     if (error) {
       console.error("Supabase updateCourse error:", error);
       return { success: false, error: error.message };
     }
+
+    // Sync updated semester package pricing if provided
+    if (semPrice !== undefined && semPrice >= 0) {
+      try {
+        const { data: sems } = await supabase.from("semesters").select("id").eq("course_id", id);
+        if (sems && sems.length > 0) {
+          const semIds = sems.map((s) => s.id);
+          await supabase.from("packages").update({ price: semPrice, original_price: semPrice * 2 }).in("id", semIds);
+          try {
+            await supabase.from("semesters").update({ price: semPrice, original_price: semPrice * 2 } as any).eq("course_id", id);
+          } catch { }
+        }
+      } catch (pkgErr) {
+        console.warn("Could not sync updated semester prices:", pkgErr);
+      }
+    }
+
     return { success: true };
   },
 
@@ -525,6 +603,7 @@ export const AcademicService = {
     }
 
     if (semIds.length > 0) {
+      await supabase.from("packages").delete().in("id", semIds);
       await supabase.from("semesters").delete().in("id", semIds);
     }
 
@@ -547,14 +626,25 @@ export const AcademicService = {
     semester_number: number;
     year?: number;
     name: string;
+    code?: string;
     description?: string;
+    thumbnail_url?: string | null;
+    price?: number;
+    is_premium?: boolean;
   }): Promise<SubjectItem> {
-    const words = params.name.split(/\s+/).filter(Boolean);
-    const initials = words.map((w) => w[0]?.toUpperCase() || "").join("").slice(0, 4);
-    const code = `BP${params.semester_number}0${words.length}${initials ? initials : "T"}`;
+    const cleanCode =
+      params.code?.trim().toUpperCase() ||
+      (() => {
+        const words = params.name.split(/\s+/).filter(Boolean);
+        const initials = words.map((w) => w[0]?.toUpperCase() || "").join("").slice(0, 4);
+        return `BP${params.semester_number}0${words.length}${initials ? initials : "T"}`;
+      })();
 
     const subId = crypto.randomUUID();
     const calculatedYear = params.year ?? (Math.ceil(params.semester_number / 2) || 1);
+    const isPaid = params.is_premium === true || (Number(params.price) > 0);
+    const finalPrice = isPaid ? (Number(params.price) || 0) : 0;
+
     const subPayload = {
       id: subId,
       course_id: params.course_id,
@@ -562,10 +652,13 @@ export const AcademicService = {
       semester: params.semester_number,
       year: calculatedYear,
       name: params.name,
-      code,
+      code: cleanCode,
       description: params.description || "",
       is_active: true,
       display_order: 1,
+      thumbnail_url: params.thumbnail_url || null,
+      price: finalPrice,
+      is_premium: isPaid,
     };
 
     const { data: dbSub, error: sErr } = await supabase
@@ -587,7 +680,7 @@ export const AcademicService = {
       semester: params.semester_number,
       year: calculatedYear,
       name: params.name,
-      code,
+      code: cleanCode,
       description: params.description || "",
       is_active: true,
       display_order: 1,
@@ -595,6 +688,9 @@ export const AcademicService = {
       materials_count: 0,
       purchased_count: 0,
       created_at: dbSub.created_at || new Date().toISOString(),
+      thumbnail_url: dbSub.thumbnail_url || null,
+      price: Number(dbSub.price) || 0,
+      is_premium: Boolean(dbSub.is_premium),
     };
   },
 
@@ -602,7 +698,7 @@ export const AcademicService = {
   async updateSubject(
     id: string,
     updates: Partial<SubjectItem> & { semester?: number; year?: number },
-  ): Promise<{ success: boolean; error?: string }> {
+  ): Promise<{ success: boolean; data?: any; error?: string }> {
     const payload: any = { ...updates };
     if (payload.semester_number !== undefined && payload.semester === undefined) {
       payload.semester = payload.semester_number;
@@ -615,15 +711,34 @@ export const AcademicService = {
     delete payload.materials_count;
     delete payload.purchased_count;
 
-    const { error } = await supabase
+    // Strict boolean and numeric sanitization for price & is_premium
+    if (payload.is_premium !== undefined) {
+      payload.is_premium = Boolean(payload.is_premium);
+      if (!payload.is_premium) {
+        payload.price = 0;
+      }
+    }
+    if (payload.price !== undefined) {
+      payload.price = Number(payload.price) || 0;
+      if (payload.price > 0 && payload.is_premium === undefined) {
+        payload.is_premium = true;
+      }
+    }
+
+    const { data, error } = await supabase
       .from("subjects")
       .update(payload)
-      .eq("id", id);
+      .eq("id", id)
+      .select();
+
     if (error) {
       console.error("Supabase updateSubject error:", error);
       return { success: false, error: error.message };
     }
-    return { success: true };
+    if (!data || data.length === 0) {
+      return { success: false, error: "Subject not found or update not permitted." };
+    }
+    return { success: true, data: data[0] };
   },
 
   // 7. Delete Subject (Safe)
@@ -650,21 +765,174 @@ export const AcademicService = {
     return { success: true };
   },
 
-  // 8. Edit Unit Title / Description
-  async updateUnit(
-    id: string,
-    updates: Partial<Pick<UnitItem, "title" | "description" | "is_active">>,
-  ): Promise<boolean> {
-    const { error } = await supabase
+  // 8. Add Unit (Saves to units and links material record)
+  async addUnit(params: {
+    subject_id: string;
+    unit_number: number;
+    title: string;
+    description?: string;
+    file_url?: string;
+    file_name?: string;
+    file_size?: number | string;
+    is_premium?: boolean;
+  }): Promise<UnitItem> {
+    if (!params.subject_id) {
+      throw new Error("Subject ID is required to create a unit.");
+    }
+    if (!params.title?.trim()) {
+      throw new Error("Unit title is required.");
+    }
+
+    const unitId = crypto.randomUUID();
+    const isPaid = Boolean(params.is_premium);
+
+    const unitPayload = {
+      id: unitId,
+      subject_id: params.subject_id,
+      unit_number: params.unit_number || 1,
+      title: params.title.trim(),
+      description: params.description?.trim() || `Unit ${params.unit_number || 1} study materials`,
+      display_order: params.unit_number || 1,
+      is_active: true,
+      file_url: params.file_url || null,
+      file_name: params.file_name || null,
+      file_size: params.file_size ? String(params.file_size) : null,
+      is_premium: isPaid,
+    };
+
+    const { data: dbUnit, error: uErr } = await supabase
       .from("units")
-      .update(updates)
-      .eq("id", id);
-    if (error) console.warn("Supabase updateUnit error:", error.message);
-    return !error;
+      .insert(unitPayload)
+      .select()
+      .single();
+
+    if (uErr) {
+      console.error("Supabase addUnit error:", uErr);
+      throw new Error(`Failed to create unit in database: ${uErr.message}`);
+    }
+
+    // Link/create corresponding study material in materials table
+    try {
+      const { data: sub } = await supabase
+        .from("subjects")
+        .select("id, course_id, semester_id, semester, year")
+        .eq("id", params.subject_id)
+        .maybeSingle();
+
+      const matId = crypto.randomUUID();
+      await supabase.from("materials").insert({
+        id: matId,
+        course_id: sub?.course_id || null,
+        semester_id: sub?.semester_id || null,
+        subject_id: params.subject_id,
+        unit_id: unitId,
+        unit_number: params.unit_number || 1,
+        unit_label: `Unit ${params.unit_number || 1}`,
+        year: sub?.year || 1,
+        semester: sub?.semester || 1,
+        title: params.title.trim(),
+        description: params.description?.trim() || `Study notes for ${params.title.trim()}`,
+        type: "PDF Notes",
+        material_type: "PDF Notes",
+        price: isPaid ? 79 : 0,
+        is_premium: isPaid,
+        status: "Published",
+        published: true,
+        file_url: params.file_url || null,
+        file_name: params.file_name || null,
+        file_size: params.file_size ? String(params.file_size) : null,
+        downloads_count: 0,
+        display_order: params.unit_number || 1,
+      });
+    } catch (matErr) {
+      console.warn("Could not create linked material record for unit:", matErr);
+    }
+
+    return {
+      id: dbUnit.id,
+      subject_id: dbUnit.subject_id,
+      unit_number: dbUnit.unit_number,
+      title: dbUnit.title,
+      description: dbUnit.description || "",
+      is_active: dbUnit.is_active ?? true,
+      display_order: dbUnit.display_order ?? dbUnit.unit_number,
+      created_at: dbUnit.created_at,
+      materials_count: params.file_url ? 1 : 0,
+      purchased_count: 0,
+      file_url: dbUnit.file_url || null,
+      file_name: dbUnit.file_name || null,
+      file_size: dbUnit.file_size || null,
+      is_premium: Boolean(dbUnit.is_premium),
+    };
   },
 
-  // 9. Delete Unit (Safe)
+  // 9. Edit Unit Title / Description / Files (Updates units and syncs linked materials)
+  async updateUnit(
+    id: string,
+    updates: Partial<UnitItem>,
+  ): Promise<{ success: boolean; error?: string }> {
+    const payload: any = {};
+    if (updates.title !== undefined) payload.title = updates.title.trim();
+    if (updates.description !== undefined) payload.description = updates.description;
+    if (updates.is_active !== undefined) payload.is_active = updates.is_active;
+    if (updates.is_premium !== undefined) payload.is_premium = Boolean(updates.is_premium);
+    if (updates.file_url !== undefined) payload.file_url = updates.file_url;
+    if (updates.file_name !== undefined) payload.file_name = updates.file_name;
+    if (updates.file_size !== undefined) payload.file_size = updates.file_size ? String(updates.file_size) : null;
+
+    const { error } = await supabase
+      .from("units")
+      .update(payload)
+      .eq("id", id);
+
+    if (error) {
+      console.error("Supabase updateUnit error:", error);
+      return { success: false, error: error.message };
+    }
+
+    // Sync corresponding materials
+    try {
+      const matUpdates: any = {};
+      if (updates.title !== undefined) matUpdates.title = updates.title.trim();
+      if (updates.is_premium !== undefined) {
+        matUpdates.is_premium = Boolean(updates.is_premium);
+        matUpdates.price = updates.is_premium ? 79 : 0;
+      }
+      if (updates.file_url !== undefined) matUpdates.file_url = updates.file_url;
+      if (updates.file_name !== undefined) matUpdates.file_name = updates.file_name;
+      if (updates.file_size !== undefined) matUpdates.file_size = updates.file_size;
+
+      if (Object.keys(matUpdates).length > 0) {
+        await supabase
+          .from("materials")
+          .update(matUpdates)
+          .eq("unit_id", id);
+      }
+    } catch (e) {
+      console.warn("Could not sync material updates for unit:", e);
+    }
+
+    return { success: true };
+  },
+
+  // 10. Delete Unit (Safe)
   async deleteUnit(id: string): Promise<{ success: boolean; error?: string }> {
+    // Check if material has active purchases
+    const { data: mats } = await supabase.from("materials").select("id").eq("unit_id", id);
+    if (mats && mats.length > 0) {
+      const matIds = mats.map((m) => m.id);
+      const { data: purch } = await supabase.from("purchases").select("id").in("material_id", matIds);
+      if (purch && purch.length > 0) {
+        return {
+          success: false,
+          error: `Cannot delete unit: Students have active purchases for materials in this unit (${purch.length} orders).`,
+        };
+      }
+    }
+
+    // Delete dependent materials
+    await supabase.from("materials").delete().eq("unit_id", id);
+
     const { error } = await supabase.from("units").delete().eq("id", id);
     if (error) {
       return { success: false, error: error.message };
@@ -751,7 +1019,7 @@ export const AcademicService = {
           try {
             const res = JSON.parse(xhr.responseText);
             if (res?.message || res?.error) errMsg = res.message || res.error;
-          } catch {}
+          } catch { }
           reject(new Error(errMsg));
         }
       };

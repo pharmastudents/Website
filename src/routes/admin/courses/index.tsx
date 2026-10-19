@@ -315,9 +315,9 @@ export default function AdminCoursesPage() {
                         {(courseSemesters.length > 0
                           ? courseSemesters
                           : Array.from({ length: crs.total_semesters || crs.duration_years * 2 }, (_, i) => ({
-                              id: `temp-${i + 1}`,
-                              semester_number: i + 1,
-                            }))
+                            id: `temp-${i + 1}`,
+                            semester_number: i + 1,
+                          }))
                         ).map((s) => (
                           <span
                             key={s.id}

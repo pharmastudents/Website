@@ -206,24 +206,24 @@ export default function CheckoutPage() {
       const orderRes = await PaymentService.createOrder(
         fromCart
           ? {
-              productType: "cart",
-              items: cartItems.map((item) => ({
-                id: item.id,
-                type: item.type,
-                title: item.title,
-                price: item.price,
-              })),
-              studentName: student?.name,
-              studentEmail: student?.email,
-            }
+            productType: "cart",
+            items: cartItems.map((item) => ({
+              id: item.id,
+              type: item.type,
+              title: item.title,
+              price: item.price,
+            })),
+            studentName: student?.name,
+            studentEmail: student?.email,
+          }
           : {
-              materialId: productType === "material" ? productId : undefined,
-              packageId: productType !== "material" ? productId : undefined,
-              productId: productId,
-              productType: productType as any,
-              studentName: student?.name,
-              studentEmail: student?.email,
-            }
+            materialId: productType === "material" ? productId : undefined,
+            packageId: productType !== "material" ? productId : undefined,
+            productId: productId,
+            productType: productType as any,
+            studentName: student?.name,
+            studentEmail: student?.email,
+          }
       );
 
       // Handle Already Owned
@@ -510,9 +510,8 @@ export default function CheckoutPage() {
       <SiteLayout>
         <div className="flex min-h-[calc(100vh-14rem)] items-center justify-center px-4 py-16">
           <div className="w-full max-w-lg rounded-3xl border border-rose-500/20 bg-card p-8 sm:p-10 text-center shadow-xl">
-            <div className={`mx-auto flex size-16 items-center justify-center rounded-2xl ${
-              isCancelled ? "bg-amber-500/10 text-amber-600" : "bg-rose-500/10 text-rose-600"
-            }`}>
+            <div className={`mx-auto flex size-16 items-center justify-center rounded-2xl ${isCancelled ? "bg-amber-500/10 text-amber-600" : "bg-rose-500/10 text-rose-600"
+              }`}>
               {isCancelled ? <Clock className="size-10" /> : <XCircle className="size-10" />}
             </div>
 

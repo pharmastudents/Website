@@ -43,11 +43,39 @@ export default function AdminCreateCoursePage() {
   const [code, setCode] = useState("");
   const [durationYears, setDurationYears] = useState<number>(4);
   const [totalSemesters, setTotalSemesters] = useState<number>(8);
+  const [priceInput, setPriceInput] = useState<string>("399");
   const [description, setDescription] = useState("");
   const [isActive, setIsActive] = useState<boolean>(true);
 
   // Auto-generate code from name if user hasn't explicitly customized it
   const [codeTouched, setCodeTouched] = useState(false);
+
+  // Controlled price input validation: min ₹1, max ₹50,000, no leading zeros like "01"
+  const handlePriceChange = (val: string) => {
+    if (val === "") {
+      setPriceInput("");
+      return;
+    }
+    const digits = val.replace(/\D/g, "");
+    const cleaned = digits.replace(/^0+(?=\d)/, "");
+    if (cleaned === "") {
+      setPriceInput("0");
+      return;
+    }
+    const num = parseInt(cleaned, 10);
+    if (!isNaN(num) && num <= 50000) {
+      setPriceInput(String(num));
+    }
+  };
+
+  const handlePriceBlur = () => {
+    const num = parseInt(priceInput, 10);
+    if (isNaN(num) || num < 1) {
+      setPriceInput("399");
+    } else {
+      setPriceInput(String(num));
+    }
+  };
 
   useEffect(() => {
     let isMounted = true;
@@ -68,6 +96,10 @@ export default function AdminCreateCoursePage() {
             setTotalSemesters(match.total_semesters || (match.duration_years || 4) * 2);
             setDescription(match.description || "");
             setIsActive(match.is_active ?? true);
+            const savedPrice = match.default_semester_price != null && match.default_semester_price > 0
+              ? match.default_semester_price
+              : 399;
+            setPriceInput(String(savedPrice));
             setCodeTouched(true);
           } else {
             toast.error("Requested course not found for editing.");
@@ -138,6 +170,9 @@ export default function AdminCreateCoursePage() {
       return;
     }
 
+    const parsedPrice = parseInt(priceInput, 10);
+    const finalPrice = !isNaN(parsedPrice) && parsedPrice >= 1 ? parsedPrice : 399;
+
     setSubmitting(true);
     try {
       if (editingCourseId) {
@@ -147,6 +182,7 @@ export default function AdminCreateCoursePage() {
           duration_years: Number(durationYears),
           total_semesters: Number(totalSemesters),
           description: description.trim(),
+          default_semester_price: finalPrice,
           is_active: isActive,
         });
 
@@ -161,10 +197,11 @@ export default function AdminCreateCoursePage() {
           duration_years: Number(durationYears),
           total_semesters: Number(totalSemesters),
           description: description.trim(),
+          default_semester_price: finalPrice,
           is_active: isActive,
           display_order: existingCourses.length + 1,
         });
-        toast.success(`Course "${name.trim()}" created with ${totalSemesters} semesters.`);
+        toast.success(`Course "${name.trim()}" created with ${totalSemesters} semesters at ₹${finalPrice}/sem.`);
       }
 
       void navigate({ to: "/admin/courses" });
@@ -296,6 +333,38 @@ export default function AdminCreateCoursePage() {
                       </option>
                     ))}
                   </select>
+                </div>
+              </div>
+
+              {/* Default Semester Package Price (₹) */}
+              <div className="rounded-xl border border-teal-200/80 bg-teal-50/40 p-4 space-y-2">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <label className="text-xs font-bold text-slate-900">
+                      Default Semester Package Price (₹) <span className="text-rose-500">*</span>
+                    </label>
+                    <p className="text-[11px] text-slate-500 mt-0.5">
+                      Amount charged to students for purchasing each semester package in this course (default: ₹399).
+                    </p>
+                  </div>
+                  <span className="font-mono text-sm font-black text-teal-800 bg-white px-2.5 py-1 rounded-lg border border-teal-200 shadow-2xs">
+                    ₹{priceInput || "399"}
+                  </span>
+                </div>
+                <div className="relative">
+                  <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm font-bold text-slate-400 select-none">
+                    ₹
+                  </span>
+                  <Input
+                    type="text"
+                    inputMode="numeric"
+                    pattern="[0-9]*"
+                    value={priceInput}
+                    onChange={(e) => handlePriceChange(e.target.value)}
+                    onBlur={handlePriceBlur}
+                    placeholder="399"
+                    className="pl-8 text-sm font-bold bg-white text-slate-900 border-slate-200 focus-visible:ring-[#0e7490]"
+                  />
                 </div>
               </div>
 

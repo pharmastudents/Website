@@ -10,6 +10,7 @@ import {
   type SubjectItem,
   type UnitItem,
 } from "@/lib/academicService";
+import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import {
   ArrowLeft,
@@ -21,16 +22,22 @@ import {
   Lock,
   Globe,
   Loader2,
-  Sparkles,
+  Save,
   Link as LinkIcon,
+  Layers,
 } from "lucide-react";
 
 export const Route = createFileRoute("/admin/materials/create")({
-  component: AdminCreateMaterialPage,
+  validateSearch: (search: Record<string, unknown>): { materialId?: string } => ({
+    materialId: typeof search.materialId === "string" ? search.materialId : undefined,
+  }),
+  component: AdminCreateOrEditMaterialPage,
 });
 
-export default function AdminCreateMaterialPage() {
+export default function AdminCreateOrEditMaterialPage() {
   const navigate = useNavigate();
+  const search = Route.useSearch();
+  const editingMaterialId = search.materialId;
 
   // Academic store state
   const [courses, setCourses] = useState<Course[]>([]);
@@ -47,9 +54,15 @@ export default function AdminCreateMaterialPage() {
   const [title, setTitle] = useState<string>("");
   const [materialType, setMaterialType] = useState<string>("PDF Notes");
   const [accessType, setAccessType] = useState<"free" | "paid">("free");
+  const [publicationStatus, setPublicationStatus] = useState<"Published" | "Draft">("Published");
   const [driveUrl, setDriveUrl] = useState<string>("");
 
-  // File Upload State
+  // Existing file information (when editing)
+  const [existingFileUrl, setExistingFileUrl] = useState<string>("");
+  const [existingFileName, setExistingFileName] = useState<string>("");
+  const [existingFileSize, setExistingFileSize] = useState<string>("");
+
+  // New File Upload State
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [uploadProgress, setUploadProgress] = useState<number>(0);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -58,16 +71,67 @@ export default function AdminCreateMaterialPage() {
 
   // Load Courses, Semesters, Subjects & Units
   useEffect(() => {
+    let isMounted = true;
     async function initData() {
       try {
         const store = await AcademicService.loadAll();
+        if (!isMounted) return;
+
         setCourses(store.courses);
         setSemesters(store.semesters);
         setSubjects(store.subjects);
         setUnits(store.units);
 
-        // Pre-select first course if available
-        if (store.courses.length > 0 && store.courses[0]) {
+        if (editingMaterialId) {
+          // Find in store first
+          let targetMat = store.materials.find((m) => m.id === editingMaterialId);
+
+          // Always fetch latest directly from Supabase to guarantee fresh data
+          try {
+            const { data: dbMat } = await supabase
+              .from("materials")
+              .select("*")
+              .eq("id", editingMaterialId)
+              .maybeSingle();
+
+            if (dbMat) {
+              targetMat = { ...(targetMat || {}), ...dbMat } as any;
+            }
+          } catch (e) {
+            console.warn("Could not query direct material from database:", e);
+          }
+
+          if (targetMat && isMounted) {
+            setTitle(targetMat.title || "");
+            setMaterialType(targetMat.material_type || (targetMat as any).type || "PDF Notes");
+            const isPaid =
+              targetMat.is_premium === true ||
+              (typeof targetMat.price === "number" && targetMat.price > 0);
+            setAccessType(isPaid ? "paid" : "free");
+            setDriveUrl(targetMat.drive_url || "");
+            setSelectedUnitNumber(targetMat.unit_number || 1);
+            setPublicationStatus(targetMat.status === "Draft" ? "Draft" : "Published");
+
+            if (targetMat.file_url) {
+              setExistingFileUrl(targetMat.file_url);
+              setExistingFileName(targetMat.file_name || "Existing Attached Document.pdf");
+              setExistingFileSize(targetMat.file_size ? `${targetMat.file_size}` : "");
+            }
+
+            // Associate with parent subject & hierarchy
+            const parentSub = store.subjects.find((s) => s.id === targetMat.subject_id);
+            if (parentSub) {
+              setSelectedSubjectId(parentSub.id);
+              setSelectedSemesterId(parentSub.semester_id || "");
+              setSelectedCourseId(parentSub.course_id || "");
+            } else if (targetMat.course_id) {
+              setSelectedCourseId(targetMat.course_id);
+              setSelectedSemesterId(targetMat.semester_id || "");
+              setSelectedSubjectId(targetMat.subject_id || "");
+            }
+          }
+        } else if (store.courses.length > 0 && store.courses[0]) {
+          // Pre-select first course when creating
           const firstCourse = store.courses[0];
           setSelectedCourseId(firstCourse.id);
 
@@ -86,11 +150,15 @@ export default function AdminCreateMaterialPage() {
         console.error("Failed to load initial academic data:", err);
         toast.error("Failed to load academic programs from database.");
       } finally {
-        setLoading(false);
+        if (isMounted) setLoading(false);
       }
     }
+
     void initData();
-  }, []);
+    return () => {
+      isMounted = false;
+    };
+  }, [editingMaterialId]);
 
   // Filtered Semesters based on Course
   const availableSemesters = useMemo(() => {
@@ -154,7 +222,6 @@ export default function AdminCreateMaterialPage() {
     }
     setSelectedFile(file);
     if (!title.trim()) {
-      // Auto-fill title from filename
       const cleanName = file.name.replace(/\.[^/.]+$/, "").replace(/[_-]/g, " ");
       setTitle(cleanName);
     }
@@ -167,7 +234,7 @@ export default function AdminCreateMaterialPage() {
     if (file) handleFileSelect(file);
   };
 
-  // Submit Handler
+  // Submit Handler (Supports both Create and Update)
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
@@ -179,7 +246,7 @@ export default function AdminCreateMaterialPage() {
       toast.error("Please enter a title for the study material.");
       return;
     }
-    if (!selectedFile && !driveUrl.trim()) {
+    if (!selectedFile && !driveUrl.trim() && !existingFileUrl) {
       toast.error("Please either upload a PDF file or provide a Google Drive / document link.");
       return;
     }
@@ -190,9 +257,35 @@ export default function AdminCreateMaterialPage() {
     try {
       const selectedSubject = subjects.find((s) => s.id === selectedSubjectId);
       const isPaid = accessType === "paid";
-      // Auto-determine price: if paid, use default 99 or subject unit price
-      const price = isPaid ? 99 : 0;
+      const price = isPaid ? 79 : 0;
 
+      if (editingMaterialId) {
+        // Update existing record in Supabase
+        const updateRes = await AcademicService.updateMaterial(editingMaterialId, {
+          course_id: selectedCourseId || selectedSubject?.course_id,
+          semester_id: selectedSemesterId || selectedSubject?.semester_id,
+          subject_id: selectedSubjectId,
+          unit_number: selectedUnitNumber,
+          title: title.trim(),
+          material_type: materialType,
+          price,
+          is_premium: isPaid,
+          status: publicationStatus,
+          drive_url: driveUrl.trim() || undefined,
+          file: selectedFile || undefined,
+          onProgress: (percent) => setUploadProgress(percent),
+        });
+
+        if (!updateRes.success) {
+          throw new Error(updateRes.error || "Failed to update study material.");
+        }
+
+        toast.success(`Study material "${title.trim()}" updated successfully!`);
+        void navigate({ to: "/admin/materials" });
+        return;
+      }
+
+      // Add new material to Supabase
       await AcademicService.addMaterial({
         course_id: selectedCourseId || selectedSubject?.course_id,
         semester_id: selectedSemesterId || selectedSubject?.semester_id,
@@ -202,7 +295,7 @@ export default function AdminCreateMaterialPage() {
         material_type: materialType,
         price,
         is_premium: isPaid,
-        status: "Published",
+        status: publicationStatus,
         file: selectedFile || undefined,
         drive_url: driveUrl.trim() || undefined,
         onProgress: (percent) => setUploadProgress(percent),
@@ -211,8 +304,8 @@ export default function AdminCreateMaterialPage() {
       toast.success("Study material uploaded and published successfully!");
       void navigate({ to: "/admin/materials" });
     } catch (err: any) {
-      console.error("Failed to add material:", err);
-      toast.error(err?.message || "Failed to upload study material.");
+      console.error("Failed to save material:", err);
+      toast.error(err?.message || "Failed to save study material.");
     } finally {
       setIsSubmitting(false);
       setUploadProgress(0);
@@ -221,8 +314,12 @@ export default function AdminCreateMaterialPage() {
 
   return (
     <AdminLayout
-      title="Add Study Material"
-      subtitle="Upload lecture notes, question banks, or syllabus files directly to students."
+      title={editingMaterialId ? "Edit Study Material" : "Add Study Material"}
+      subtitle={
+        editingMaterialId
+          ? "Update material title, curriculum assignment, publication status, or replace file."
+          : "Upload lecture notes, question banks, or syllabus files directly to students."
+      }
       actions={
         <Button asChild variant="outline" size="sm" className="gap-2 text-xs font-semibold">
           <Link to="/admin/materials">
@@ -235,15 +332,34 @@ export default function AdminCreateMaterialPage() {
         <form onSubmit={handleSubmit} className="space-y-6">
           {/* Main 2-Column Form Card */}
           <div className="rounded-2xl border border-border/80 bg-card p-6 shadow-2xs space-y-6">
-            
             {/* Header info */}
-            <div className="flex items-center gap-3 border-b border-border/60 pb-4">
-              <div className="flex size-10 items-center justify-center rounded-xl bg-teal-500/10 text-teal-700">
-                <FileText className="size-5" />
+            <div className="flex items-center justify-between border-b border-border/60 pb-4">
+              <div className="flex items-center gap-3">
+                <div className="flex size-10 items-center justify-center rounded-xl bg-teal-500/10 text-teal-700">
+                  <FileText className="size-5" />
+                </div>
+                <div>
+                  <h2 className="text-sm font-bold text-foreground">
+                    {editingMaterialId ? "Edit Material Details" : "Material Information"}
+                  </h2>
+                  <p className="text-xs text-muted-foreground">
+                    Select the curriculum hierarchy and resource details.
+                  </p>
+                </div>
               </div>
-              <div>
-                <h2 className="text-sm font-bold text-foreground">Material Information</h2>
-                <p className="text-xs text-muted-foreground">Select the curriculum hierarchy and resource details.</p>
+
+              {/* Publication Status Selector */}
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] font-bold text-muted-foreground uppercase">Status:</span>
+                <select
+                  value={publicationStatus}
+                  onChange={(e) => setPublicationStatus(e.target.value as "Published" | "Draft")}
+                  disabled={isSubmitting}
+                  className="h-8 rounded-lg border border-input bg-background px-2.5 text-xs font-semibold text-foreground focus:outline-none focus:ring-2 focus:ring-[#0e7490]"
+                >
+                  <option value="Published">Published</option>
+                  <option value="Draft">Draft</option>
+                </select>
               </div>
             </div>
 
@@ -316,7 +432,7 @@ export default function AdminCreateMaterialPage() {
 
             {/* Unit & Title */}
             <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-              {/* Unit Selection (1 to 5) */}
+              {/* Unit Selection (1 to 10) */}
               <div>
                 <label className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider block mb-1.5">
                   Unit *
@@ -327,11 +443,11 @@ export default function AdminCreateMaterialPage() {
                   disabled={isSubmitting}
                   className="w-full h-10 rounded-xl border border-input bg-background px-3 text-xs font-semibold text-foreground focus:outline-none focus:ring-2 focus:ring-[#0e7490]"
                 >
-                  <option value={1}>Unit 1</option>
-                  <option value={2}>Unit 2</option>
-                  <option value={3}>Unit 3</option>
-                  <option value={4}>Unit 4</option>
-                  <option value={5}>Unit 5</option>
+                  {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((u) => (
+                    <option key={u} value={u}>
+                      Unit {u}
+                    </option>
+                  ))}
                 </select>
               </div>
 
@@ -407,12 +523,42 @@ export default function AdminCreateMaterialPage() {
               </div>
             </div>
 
+            {/* Existing File Indicator (When editing) */}
+            {existingFileUrl && !selectedFile && (
+              <div className="flex items-center justify-between rounded-xl border border-teal-200 bg-teal-50/60 p-3.5">
+                <div className="flex items-center gap-3">
+                  <div className="flex size-9 items-center justify-center rounded-lg bg-teal-700 text-white">
+                    <FileCheck className="size-4" />
+                  </div>
+                  <div>
+                    <p className="text-xs font-bold text-foreground">
+                      Current PDF: {existingFileName}
+                    </p>
+                    <p className="text-[11px] text-muted-foreground">
+                      Attached to this material. To replace it, browse or drag a new PDF below.
+                    </p>
+                  </div>
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="h-8 text-xs font-semibold border-teal-300 text-teal-800 hover:bg-teal-100"
+                >
+                  <Upload className="size-3.5 mr-1" /> Replace PDF
+                </Button>
+              </div>
+            )}
+
             {/* PDF Upload Dropzone */}
             <div>
               <label className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider block mb-1.5">
-                Upload PDF Document (Stored in Supabase notes bucket)
+                {existingFileUrl
+                  ? "Replace PDF Document (Optional)"
+                  : "Upload PDF Document (Stored in Supabase notes bucket)"}
               </label>
-              
+
               <input
                 ref={fileInputRef}
                 type="file"
@@ -443,7 +589,7 @@ export default function AdminCreateMaterialPage() {
                     <Upload className="size-5" />
                   </div>
                   <p className="text-xs font-bold text-foreground">
-                    Click to browse or drag & drop PDF here
+                    {existingFileUrl ? "Click to replace PDF or drag new file here" : "Click to browse or drag & drop PDF here"}
                   </p>
                   <p className="text-[11px] text-muted-foreground mt-1">
                     Maximum allowed file size: 50 MB · Standard PDF (.pdf) format
@@ -458,7 +604,7 @@ export default function AdminCreateMaterialPage() {
                     <div>
                       <p className="text-xs font-bold text-foreground">{selectedFile.name}</p>
                       <p className="text-[11px] text-muted-foreground">
-                        {(selectedFile.size / (1024 * 1024)).toFixed(2)} MB · Ready for upload
+                        {(selectedFile.size / (1024 * 1024)).toFixed(2)} MB · Ready to upload
                       </p>
                     </div>
                   </div>
@@ -470,7 +616,7 @@ export default function AdminCreateMaterialPage() {
                     disabled={isSubmitting}
                     className="text-xs text-rose-600 hover:text-rose-700 hover:bg-rose-50"
                   >
-                    <X className="size-4" /> Remove
+                    <X className="size-4" /> Cancel New File
                   </Button>
                 </div>
               )}
@@ -492,7 +638,7 @@ export default function AdminCreateMaterialPage() {
                 />
               </div>
               <p className="text-[10px] text-muted-foreground mt-1">
-                Used if your notes are hosted on Google Drive or external storage.
+                Used if your notes are hosted on Google Drive or external cloud storage.
               </p>
             </div>
 
@@ -500,7 +646,7 @@ export default function AdminCreateMaterialPage() {
             {isSubmitting && (
               <div className="space-y-1.5">
                 <div className="flex justify-between text-xs font-semibold text-muted-foreground">
-                  <span>Uploading to Supabase storage...</span>
+                  <span>Saving to Supabase...</span>
                   <span>{uploadProgress}%</span>
                 </div>
                 <div className="h-2 w-full rounded-full bg-slate-100 overflow-hidden">
@@ -531,7 +677,11 @@ export default function AdminCreateMaterialPage() {
             >
               {isSubmitting ? (
                 <>
-                  <Loader2 className="size-4 animate-spin" /> Uploading Material...
+                  <Loader2 className="size-4 animate-spin" /> Saving Material...
+                </>
+              ) : editingMaterialId ? (
+                <>
+                  <Save className="size-4" /> Save Changes
                 </>
               ) : (
                 <>

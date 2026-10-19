@@ -93,18 +93,21 @@ export default function ProtectedDocumentViewer() {
     (material as any)?.security?.watermark_pdf ??
     true;
 
-  // Real-time verification from Supabase purchases table
+  // Real-time verification from Supabase purchases and orders tables
   useEffect(() => {
     const studentIdToCheck = student?.id || routeStudentId;
     if (!studentIdToCheck || !materialId) return;
 
     void (async () => {
-      // 1. Direct material purchase check
+      const cleanId = materialId.startsWith("mat_u_") ? materialId.replace("mat_u_", "") : materialId;
+      const targetSubId = fetchedMaterial?.subject_id || (material as any)?.subject_id || (material as any)?.subjectId;
+
+      // 1. Direct material / unit purchase check
       const { data } = await supabase
         .from("purchases")
         .select("id")
         .eq("student_id", studentIdToCheck)
-        .eq("material_id", materialId)
+        .in("material_id", [materialId, cleanId])
         .maybeSingle();
       if (data) {
         setRemotePurchased(true);
@@ -112,7 +115,6 @@ export default function ProtectedDocumentViewer() {
       }
 
       // 2. Parent subject purchase check (Subject-wise sales unlocks all units)
-      const targetSubId = fetchedMaterial?.subject_id || (material as any)?.subject_id || (material as any)?.subjectId;
       if (targetSubId) {
         const { data: subPur } = await supabase
           .from("purchases")
@@ -136,6 +138,26 @@ export default function ProtectedDocumentViewer() {
           setRemotePurchased(true);
           return;
         }
+      }
+
+      // 3. Check paid orders for material or unit
+      const { data: allPaidOrders } = await supabase
+        .from("orders")
+        .select("id, product_id, material_ids")
+        .eq("student_id", studentIdToCheck)
+        .eq("status", "Paid");
+
+      if (allPaidOrders && allPaidOrders.some((o) => {
+        if (o.product_id === cleanId || o.product_id === materialId || (targetSubId && o.product_id === targetSubId)) return true;
+        if (Array.isArray(o.material_ids) && (
+          o.material_ids.includes(cleanId) ||
+          o.material_ids.includes(materialId) ||
+          (targetSubId && o.material_ids.includes(targetSubId))
+        )) return true;
+        return false;
+      })) {
+        setRemotePurchased(true);
+        return;
       }
     })();
   }, [student?.id, routeStudentId, materialId, fetchedMaterial?.subject_id, (material as any)?.subject_id, (material as any)?.subjectId]);
@@ -179,12 +201,50 @@ export default function ProtectedDocumentViewer() {
   useEffect(() => {
     if (materialId) {
       void (async () => {
+        const cleanId = materialId.startsWith("mat_u_") ? materialId.replace("mat_u_", "") : materialId;
+
+        // 1. Direct material lookup
         const { data } = await supabase
           .from("materials")
           .select("*")
-          .eq("id", materialId)
+          .eq("id", cleanId)
           .maybeSingle();
-        if (data) setFetchedMaterial(data);
+        if (data) {
+          setFetchedMaterial(data);
+          return;
+        }
+
+        // 2. Check material by unit_id
+        const { data: mByUnit } = await supabase
+          .from("materials")
+          .select("*")
+          .eq("unit_id", cleanId)
+          .maybeSingle();
+        if (mByUnit) {
+          setFetchedMaterial(mByUnit);
+          return;
+        }
+
+        // 3. Fallback check units table directly
+        const { data: uData } = await supabase
+          .from("units")
+          .select("*")
+          .eq("id", cleanId)
+          .maybeSingle();
+        if (uData) {
+          setFetchedMaterial({
+            id: uData.id,
+            title: uData.title,
+            description: uData.description || `Study materials for ${uData.title}`,
+            subject_id: uData.subject_id,
+            unit_id: uData.id,
+            file_url: uData.file_url,
+            file_name: uData.file_name,
+            file_size: uData.file_size,
+            is_premium: Boolean(uData.is_premium),
+            price: uData.is_premium ? 79 : 0,
+          });
+        }
       })();
     }
   }, [materialId]);
@@ -447,9 +507,12 @@ export default function ProtectedDocumentViewer() {
               >
                 <Link
                   to="/checkout"
-                  search={{ productId: material.id, productType: "material" } as any}
+                  search={{
+                    productId: (material as any).subject_id || (material as any).subjectId || material.id,
+                    productType: ((material as any).subject_id || (material as any).subjectId) ? "subject" : "material",
+                  } as any}
                 >
-                  Unlock & Purchase Document ({formatPrice(material.price)})
+                  Unlock & Purchase Document ({formatPrice(material.price || 79)})
                 </Link>
               </Button>
               <Button

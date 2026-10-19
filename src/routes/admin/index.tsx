@@ -252,6 +252,53 @@ export default function AdminDashboardIndex() {
     0
   );
 
+  // Date calculations in India timezone (Asia/Kolkata)
+  const getKolkataDateParts = (dateInput?: string | Date) => {
+    const d = dateInput ? new Date(dateInput) : new Date();
+    if (isNaN(d.getTime())) return null;
+    const formatter = new Intl.DateTimeFormat("en-US", {
+      timeZone: "Asia/Kolkata",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    });
+    const parts = formatter.formatToParts(d);
+    return {
+      year: parseInt(parts.find((p) => p.type === "year")!.value, 10),
+      month: parseInt(parts.find((p) => p.type === "month")!.value, 10),
+      day: parseInt(parts.find((p) => p.type === "day")!.value, 10),
+    };
+  };
+
+  const currentKolkata = getKolkataDateParts();
+
+  const todayRevenue = paidOrdersList.reduce((acc, o) => {
+    const orderDate = getKolkataDateParts(o.created_at || o.order_date);
+    if (
+      orderDate &&
+      currentKolkata &&
+      orderDate.year === currentKolkata.year &&
+      orderDate.month === currentKolkata.month &&
+      orderDate.day === currentKolkata.day
+    ) {
+      return acc + (Number(o.final_amount) || Number(o.amount) || 0);
+    }
+    return acc;
+  }, 0);
+
+  const monthRevenue = paidOrdersList.reduce((acc, o) => {
+    const orderDate = getKolkataDateParts(o.created_at || o.order_date);
+    if (
+      orderDate &&
+      currentKolkata &&
+      orderDate.year === currentKolkata.year &&
+      orderDate.month === currentKolkata.month
+    ) {
+      return acc + (Number(o.final_amount) || Number(o.amount) || 0);
+    }
+    return acc;
+  }, 0);
+
   // Year Tab Statistics
   const yearStudents = students.filter((s) => s.year === selectedYearTab);
   const yearSubjects = subjects.filter((s) => s.semester === selectedYearTab * 2 - 1 || s.semester === selectedYearTab * 2);
@@ -419,9 +466,9 @@ export default function AdminDashboardIndex() {
               <>
                 <p className="mt-2 text-2xl font-black text-[#0e7490]">{formatINR(verifiedRevenue)}</p>
                 <div className="mt-2 flex items-center gap-2 text-[10px] text-muted-foreground font-medium">
-                  <span>Today: {formatINR(0)}</span>
+                  <span>Today: {formatINR(todayRevenue)}</span>
                   <span>·</span>
-                  <span>This Month: {formatINR(verifiedRevenue)}</span>
+                  <span>This Month: {formatINR(monthRevenue)}</span>
                 </div>
               </>
             )}

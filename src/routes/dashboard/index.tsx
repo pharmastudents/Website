@@ -42,8 +42,12 @@ export default function DashboardPage() {
   const [dbOrders, setDbOrders] = useState<any[]>([]);
   const [dbPurchases, setDbPurchases] = useState<any[]>([]);
   const [dbFavorites, setDbFavorites] = useState<any[]>([]);
+  const [dbCourses, setDbCourses] = useState<any[]>([]);
+  const [dbSemesters, setDbSemesters] = useState<any[]>([]);
+  const [dbUnits, setDbUnits] = useState<any[]>([]);
   const [loadingDb, setLoadingDb] = useState(true);
   const [dbLoaded, setDbLoaded] = useState(false);
+  const [selectedSemesterFilter, setSelectedSemesterFilter] = useState<number | "all">("all");
 
   // Authentication Guard
   useEffect(() => {
@@ -62,19 +66,16 @@ export default function DashboardPage() {
       if (!student) return;
       setLoadingDb(true);
       try {
-        const studentSem = student.semester || 1;
-
-        // 1. Fetch subjects for student's semester
+        // 1. Fetch ALL subjects ordered by semester and display_order
         const { data: subs } = await supabase
           .from("subjects")
           .select("*")
-          .eq("semester", studentSem)
+          .order("semester", { ascending: true })
           .order("display_order", { ascending: true });
 
-        // 2. Fetch published materials for student's semester
+        // 2. Fetch published materials
         const { data: mats } = await (supabase.from("materials") as any)
           .select("*")
-          .eq("semester", studentSem)
           .eq("status", "Published")
           .order("created_at", { ascending: false });
 
@@ -97,12 +98,33 @@ export default function DashboardPage() {
           .select("*")
           .eq("student_id", student.id);
 
+        // 6. Fetch authoritative active courses
+        const { data: coursesData } = await supabase
+          .from("courses")
+          .select("*")
+          .eq("is_active", true)
+          .order("display_order", { ascending: true });
+
+        // 7. Fetch semesters
+        const { data: semestersData } = await supabase
+          .from("semesters")
+          .select("id, course_id, semester_number")
+          .order("semester_number", { ascending: true });
+
+        // 8. Fetch units
+        const { data: unitsData } = await supabase
+          .from("units")
+          .select("id, subject_id, unit_number, title");
+
         if (isMounted) {
           setDbSubjects(subs || []);
           setDbMaterials(mats || []);
           setDbPurchases(purs || []);
           setDbOrders(ords || []);
           setDbFavorites(favs || []);
+          setDbCourses(coursesData || []);
+          setDbSemesters(semestersData || []);
+          setDbUnits(unitsData || []);
           setDbLoaded(true);
         }
       } catch (err) {
@@ -123,23 +145,40 @@ export default function DashboardPage() {
     };
   }, [student?.id, student?.semester]);
 
-  // Derived Subjects: strictly from DB if loaded, fallback only if loading
-  const semesterSubjects = useMemo(() => {
-    if (dbLoaded) return dbSubjects;
+  // Authoritative full subject catalog from DB
+  const allSubjects = useMemo(() => {
+    if (dbLoaded && dbSubjects.length > 0) return dbSubjects;
     if (dbSubjects.length > 0) return dbSubjects;
-    return db.subjects.filter((s) => s.semester === (student?.semester || 1));
-  }, [dbLoaded, dbSubjects, db.subjects, student?.semester]);
+    return db.subjects;
+  }, [dbLoaded, dbSubjects, db.subjects]);
 
-  // Derived Materials: strictly from DB if loaded, fallback only if loading
+  // Dynamic available semesters present in the database
+  const availableSemesters = useMemo(() => {
+    const sems = new Set<number>();
+    allSubjects.forEach((s) => {
+      if (s.semester) sems.add(Number(s.semester));
+    });
+    if (sems.size === 0) return [1, 2, 3, 4, 5, 6, 7, 8];
+    return Array.from(sems).sort((a, b) => a - b);
+  }, [allSubjects]);
+
+  // Filtered subjects based on active semester tab pill
+  const filteredSubjects = useMemo(() => {
+    if (selectedSemesterFilter === "all") return allSubjects;
+    return allSubjects.filter((s) => Number(s.semester) === Number(selectedSemesterFilter));
+  }, [allSubjects, selectedSemesterFilter]);
+
+  // Derived subjects for student's enrolled semester
+  const semesterSubjects = useMemo(() => {
+    return allSubjects.filter((s) => Number(s.semester) === Number(student?.semester || 1));
+  }, [allSubjects, student?.semester]);
+
+  // Derived Materials
   const semesterMaterials = useMemo(() => {
     if (dbLoaded) return dbMaterials;
     if (dbMaterials.length > 0) return dbMaterials;
-    return db.materials.filter(
-      (m) =>
-        (m.semester === (student?.semester || 1) || m.year === (student?.year || 1)) &&
-        m.published,
-    );
-  }, [dbLoaded, dbMaterials, db.materials, student?.semester, student?.year]);
+    return db.materials.filter((m) => m.published);
+  }, [dbLoaded, dbMaterials, db.materials]);
 
   // Check if student owns/unlocked a material
   const checkUnlocked = useCallback(
@@ -241,12 +280,12 @@ export default function DashboardPage() {
       setDbFavorites((prev) => prev.filter((f) => (f.material_id || f.materialId) !== matId));
       try {
         await supabase.from("favorites").delete().eq("student_id", student.id).eq("material_id", matId);
-      } catch {}
+      } catch { }
     } else {
       setDbFavorites((prev) => [...prev, { student_id: student.id, material_id: matId }]);
       try {
         await supabase.from("favorites").insert({ student_id: student.id, material_id: matId });
-      } catch {}
+      } catch { }
     }
     toggleFavorite(matId);
   };
@@ -254,6 +293,50 @@ export default function DashboardPage() {
   const isMatFavorite = (matId: string) => {
     return dbFavorites.some((f) => (f.material_id || f.materialId) === matId) || isFavorite(matId);
   };
+
+  // Authoritative check if student owns this subject
+  const isSubjectPurchased = useCallback(
+    (sub: any): boolean => {
+      if (!sub.is_premium || !sub.price || Number(sub.price) === 0) return true;
+      if (!student) return false;
+
+      // Check semester package entitlement
+      const semNum = sub.semester || 1;
+      const semPurch = dbPurchases.some(
+        (p) =>
+          p.material_id === `sem-${semNum}` ||
+          (sub.semester_id && p.material_id === sub.semester_id && ((p.status || "").toLowerCase() === "unlocked" || (p.status || "").toLowerCase() === "paid")),
+      );
+      if (semPurch) return true;
+
+      const semOrder = dbOrders.some(
+        (o) =>
+          o.status?.toLowerCase() === "paid" &&
+          (o.product_type === "semester" || o.product_type === "package") &&
+          ((sub.semester_id && o.product_id === sub.semester_id) || o.product_title?.toLowerCase().includes(`semester ${semNum}`)),
+      );
+      if (semOrder) return true;
+
+      const directPurch = dbPurchases.some(
+        (p) =>
+          p.material_id === sub.id &&
+          (
+            (p.status || "").toLowerCase() === "unlocked" ||
+            (p.status || "").toLowerCase() === "paid" ||
+            (p.status || "").toLowerCase() === "active" ||
+            ((p as any).payment_status || "").toLowerCase() === "paid" ||
+            ((p as any).payment_status || "").toLowerCase() === "free"
+          ),
+      );
+      if (directPurch) return true;
+      return dbOrders.some(
+        (o) =>
+          o.status?.toLowerCase() === "paid" &&
+          (o.product_id === sub.id || (Array.isArray(o.material_ids) && o.material_ids.includes(sub.id))),
+      );
+    },
+    [dbPurchases, dbOrders, student],
+  );
 
   // Subject icon helper
   const getSubjectIcon = (index: number) => {
@@ -282,8 +365,6 @@ export default function DashboardPage() {
   };
 
   if (!ready || !student) return null;
-
-  const displayedNotes = semesterMaterials.slice(0, 4);
 
   return (
     <StudentLayout>
@@ -450,7 +531,7 @@ export default function DashboardPage() {
         </div>
 
         {/* ──────────────────────────────────────────────────────────────────────── */}
-        {/* ROW 3: AVAILABLE COURSES (B.Pharm, D.Pharm, M.Pharm)                     */}
+        {/* ROW 3: AVAILABLE COURSES (Authoritative from Supabase)                    */}
         {/* ──────────────────────────────────────────────────────────────────────── */}
         <div>
           <div className="flex items-center justify-between mb-4">
@@ -466,315 +547,218 @@ export default function DashboardPage() {
             </Link>
           </div>
 
-          <div className="grid gap-4 sm:grid-cols-3">
-            {/* 1. B.Pharm */}
-            <Link
-              to="/bpharm"
-              search={{ courseId: "bpharm" } as any}
-              className="group flex items-center justify-between rounded-2xl border border-slate-200/80 bg-white p-5 shadow-xs transition-all hover:border-blue-300 hover:shadow-sm"
-            >
-              <div className="flex items-center gap-4">
-                <div className="flex size-12 shrink-0 items-center justify-center rounded-2xl bg-blue-50 text-blue-600 border border-blue-100">
-                  <GraduationCap className="size-6" />
-                </div>
-                <div>
-                  <h3 className="text-sm font-black text-slate-900 group-hover:text-blue-700 transition-colors">
-                    B.Pharm
-                  </h3>
-                  <p className="text-xs text-slate-500">Bachelor of Pharmacy</p>
-                  <p className="text-[10px] text-slate-400 mt-1 font-medium flex items-center gap-1">
-                    <Calendar className="size-3" /> 8 Semesters
-                  </p>
-                </div>
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {dbCourses.length === 0 ? (
+              <div className="col-span-full rounded-2xl border border-dashed border-slate-200 bg-white p-8 text-center text-slate-400">
+                <GraduationCap className="mx-auto size-8 text-slate-300 mb-2" />
+                <p className="text-xs font-semibold text-slate-600">No active courses published yet</p>
               </div>
-              <ChevronRight className="size-5 text-slate-300 group-hover:text-blue-600 transition-colors" />
-            </Link>
+            ) : (
+              dbCourses.map((course, idx) => {
+                const courseSems = dbSemesters.filter((s) => s.course_id === course.id);
+                const totalSems = courseSems.length > 0 ? courseSems.length : (course.duration_years || 4) * 2;
+                const colors = [
+                  { bg: "bg-blue-50 text-blue-600 border border-blue-100", hover: "hover:border-blue-300", textHover: "group-hover:text-blue-700", iconHover: "group-hover:text-blue-600" },
+                  { bg: "bg-emerald-50 text-emerald-600 border border-emerald-100", hover: "hover:border-emerald-300", textHover: "group-hover:text-emerald-700", iconHover: "group-hover:text-emerald-600" },
+                  { bg: "bg-purple-50 text-purple-600 border border-purple-100", hover: "hover:border-purple-300", textHover: "group-hover:text-purple-700", iconHover: "group-hover:text-purple-600" },
+                ][idx % 3];
 
-            {/* 2. D.Pharm */}
-            <Link
-              to="/bpharm"
-              search={{ courseId: "dpharm" } as any}
-              className="group flex items-center justify-between rounded-2xl border border-slate-200/80 bg-white p-5 shadow-xs transition-all hover:border-emerald-300 hover:shadow-sm"
-            >
-              <div className="flex items-center gap-4">
-                <div className="flex size-12 shrink-0 items-center justify-center rounded-2xl bg-emerald-50 text-emerald-600 border border-emerald-100">
-                  <GraduationCap className="size-6" />
-                </div>
-                <div>
-                  <h3 className="text-sm font-black text-slate-900 group-hover:text-emerald-700 transition-colors">
-                    D.Pharm
-                  </h3>
-                  <p className="text-xs text-slate-500">Diploma in Pharmacy</p>
-                  <p className="text-[10px] text-slate-400 mt-1 font-medium flex items-center gap-1">
-                    <Calendar className="size-3" /> 2 Semesters
-                  </p>
-                </div>
-              </div>
-              <ChevronRight className="size-5 text-slate-300 group-hover:text-emerald-600 transition-colors" />
-            </Link>
-
-            {/* 3. M.Pharm */}
-            <Link
-              to="/bpharm"
-              search={{ courseId: "mpharm" } as any}
-              className="group flex items-center justify-between rounded-2xl border border-slate-200/80 bg-white p-5 shadow-xs transition-all hover:border-rose-300 hover:shadow-sm"
-            >
-              <div className="flex items-center gap-4">
-                <div className="flex size-12 shrink-0 items-center justify-center rounded-2xl bg-rose-50 text-rose-600 border border-rose-100">
-                  <GraduationCap className="size-6" />
-                </div>
-                <div>
-                  <h3 className="text-sm font-black text-slate-900 group-hover:text-rose-700 transition-colors">
-                    M.Pharm
-                  </h3>
-                  <p className="text-xs text-slate-500">Master of Pharmacy</p>
-                  <p className="text-[10px] text-slate-400 mt-1 font-medium flex items-center gap-1">
-                    <Calendar className="size-3" /> 4 Semesters
-                  </p>
-                </div>
-              </div>
-              <ChevronRight className="size-5 text-slate-300 group-hover:text-rose-600 transition-colors" />
-            </Link>
-          </div>
-        </div>
-
-        {/* ──────────────────────────────────────────────────────────────────────── */}
-        {/* ROW 4: SEMESTER SUBJECTS (Full Width 4 Cards)                            */}
-        {/* ──────────────────────────────────────────────────────────────────────── */}
-        <div>
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-base sm:text-lg font-black text-slate-900">
-              Semester {student.semester || 1} - Subjects
-            </h2>
-            <Link
-              to="/bpharm"
-              search={{ sem: student.semester || 1 } as any}
-              className="flex items-center gap-1 text-xs font-bold text-teal-700 hover:text-teal-800"
-            >
-              <span>View All Subjects</span>
-              <ArrowRight className="size-3.5" />
-            </Link>
-          </div>
-
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            {semesterSubjects.slice(0, 4).map((sub, idx) => {
-              const styling = getSubjectIcon(idx);
-              const Icon = styling.icon;
-              const subNotes = semesterMaterials.filter(
-                (m) => (m.subject_id || m.subjectId) === sub.id,
-              );
-              const totalNotes = subNotes.length;
-              const purchasedCount = subNotes.filter((m) =>
-                checkUnlocked(m.id, m.is_premium ?? (Number(m.price) > 0), Number(m.price || 0)),
-              ).length;
-
-              return (
-                <div
-                  key={sub.id}
-                  className="rounded-2xl border border-slate-200/80 bg-white p-5 shadow-xs flex flex-col justify-between hover:border-teal-300 transition-all"
-                >
-                  <div>
-                    <div className="flex items-center gap-3">
-                      <div className={`flex size-10 shrink-0 items-center justify-center rounded-xl ${styling.bg}`}>
-                        <Icon className="size-5" />
+                return (
+                  <Link
+                    key={course.id}
+                    to="/bpharm"
+                    search={{ courseId: course.id } as any}
+                    className={`group flex items-center justify-between rounded-2xl border border-slate-200/80 bg-white p-5 shadow-xs transition-all ${colors.hover} hover:shadow-sm`}
+                  >
+                    <div className="flex items-center gap-4">
+                      <div className={`flex size-12 shrink-0 items-center justify-center rounded-2xl ${colors.bg}`}>
+                        <GraduationCap className="size-6" />
                       </div>
-                      <div className="min-w-0">
-                        <h3 className="text-xs sm:text-sm font-black text-slate-900 truncate">
-                          {sub.name}
+                      <div>
+                        <h3 className={`text-sm font-black text-slate-900 ${colors.textHover} transition-colors`}>
+                          {course.name}
                         </h3>
-                        <p className="text-[11px] font-mono text-slate-400 mt-0.5">
-                          {sub.code || `BP${(student.semester || 1) * 100 + idx + 1}T`}
+                        <p className="text-xs text-slate-500">{course.description || "Pharmacy Program"}</p>
+                        <p className="text-[10px] text-slate-400 mt-1 font-medium flex items-center gap-1">
+                          <Calendar className="size-3" /> {totalSems} Semesters
                         </p>
                       </div>
                     </div>
-
-                    <div className="mt-4 flex items-center justify-between text-[11px] text-slate-500 border-t border-slate-100 pt-3">
-                      <span className="flex items-center gap-1 font-semibold">
-                        <FileText className="size-3.5 text-slate-400" />
-                        {totalNotes} Materials
-                      </span>
-                      <span className="flex items-center gap-1 font-semibold text-teal-700">
-                        <ShoppingBag className="size-3.5 text-teal-600" />
-                        {purchasedCount} Purchased
-                      </span>
-                    </div>
-                  </div>
-
-                  <div className="mt-4">
-                    <Button
-                      asChild
-                      variant="outline"
-                      size="sm"
-                      className="w-full h-8 text-xs font-bold text-teal-700 border-teal-200 bg-teal-50/50 hover:bg-teal-100/70 hover:text-teal-800 rounded-xl"
-                    >
-                      <Link
-                        to="/bpharm"
-                        search={{ sem: student.semester || 1, subjectId: sub.id } as any}
-                      >
-                        <span>View Materials</span>
-                        <ArrowRight className="ml-1 size-3.5" />
-                      </Link>
-                    </Button>
-                  </div>
-                </div>
-              );
-            })}
+                    <ChevronRight className={`size-5 text-slate-300 ${colors.iconHover} transition-colors`} />
+                  </Link>
+                );
+              })
+            )}
           </div>
         </div>
 
         {/* ──────────────────────────────────────────────────────────────────────── */}
-        {/* ROW 5: LATEST NOTES FOR YOUR SUBJECTS (Full Width 4 Cards)               */}
+        {/* ROW 4: ALL SUBJECTS (With Semester Filter Tabs & Direct Prices)          */}
         {/* ──────────────────────────────────────────────────────────────────────── */}
-        <div>
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-base sm:text-lg font-black text-slate-900">
-              Latest Notes for Your Subjects
-            </h2>
-            <Link
-              to="/bpharm"
-              search={{ sem: student.semester || 1 } as any}
-              className="flex items-center gap-1 text-xs font-bold text-teal-700 hover:text-teal-800"
-            >
-              <span>View All</span>
-              <ArrowRight className="size-3.5" />
-            </Link>
+        <div className="space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+            <div>
+              <div className="flex items-center gap-2.5">
+                <h2 className="text-base sm:text-lg font-black text-slate-900">
+                  {selectedSemesterFilter === "all" ? "All Subjects" : `Semester ${selectedSemesterFilter} - Subjects`}
+                </h2>
+                <span className="text-xs font-bold px-2.5 py-0.5 rounded-full bg-teal-50 text-teal-800 border border-teal-200">
+                  {filteredSubjects.length} {filteredSubjects.length === 1 ? "Subject" : "Subjects"}
+                </span>
+              </div>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Official PCI curriculum subjects, units, notes, and study resources.
+              </p>
+            </div>
+
+            {/* Semester-Wise Filter Pills */}
+            <div className="flex items-center gap-1.5 overflow-x-auto pb-1 sm:pb-0 scrollbar-none">
+              <button
+                type="button"
+                onClick={() => setSelectedSemesterFilter("all")}
+                className={`rounded-full px-3.5 py-1.5 text-xs font-bold transition-all shrink-0 ${
+                  selectedSemesterFilter === "all"
+                    ? "bg-[#0e7490] text-white shadow-xs"
+                    : "border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 hover:text-slate-900"
+                }`}
+              >
+                All Semesters
+              </button>
+              {availableSemesters.map((sem) => (
+                <button
+                  key={sem}
+                  type="button"
+                  onClick={() => setSelectedSemesterFilter(sem)}
+                  className={`rounded-full px-3.5 py-1.5 text-xs font-bold transition-all shrink-0 ${
+                    selectedSemesterFilter === sem
+                      ? "bg-[#0e7490] text-white shadow-xs"
+                      : "border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 hover:text-slate-900"
+                  }`}
+                >
+                  Sem {sem}
+                </button>
+              ))}
+            </div>
           </div>
 
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            {displayedNotes.map((mat) => {
-              const isPaid = mat.is_premium ?? (Number(mat.price) > 0);
-              const isOwned = checkUnlocked(mat.id, isPaid, Number(mat.price || 0));
-              const parentSub = semesterSubjects.find(
-                (s) => s.id === (mat.subject_id || mat.subjectId),
-              );
-              const favorited = isMatFavorite(mat.id);
-              const inCart = isInCart(mat.id);
+          {filteredSubjects.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-slate-200 bg-white p-12 text-center text-slate-400">
+              <BookOpen className="mx-auto size-10 text-slate-300 mb-2" />
+              <p className="text-sm font-bold text-slate-700">No subjects found for Semester {selectedSemesterFilter}</p>
+              <p className="text-xs text-slate-400 mt-1">Select another semester tab above or browse Available Courses.</p>
+            </div>
+          ) : (
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+              {filteredSubjects.map((sub, idx) => {
+                const styling = getSubjectIcon(idx);
+                const Icon = styling.icon;
+                const subUnitsCount = dbUnits.filter((u) => u.subject_id === sub.id).length;
+                const subNotes = dbMaterials.filter(
+                  (m) => (m.subject_id || m.subjectId) === sub.id,
+                );
+                const unitsOrNotesCount = subUnitsCount > 0 ? `${subUnitsCount} Units` : `${subNotes.length} Materials`;
+                const isPurchased = isSubjectPurchased(sub);
+                const isPaid = sub.is_premium === true || Number(sub.price) > 0;
+                const displayPrice = Number(sub.price || 79);
 
-              return (
-                <div
-                  key={mat.id}
-                  className="group rounded-2xl border border-slate-200/80 bg-white p-4 sm:p-5 shadow-xs flex flex-col justify-between transition-all hover:border-teal-300 hover:shadow-sm"
-                >
-                  <div>
-                    {/* Badge & Bookmark */}
-                    <div className="flex items-center justify-between">
-                      <Badge
-                        className={`text-[10px] font-bold px-2 py-0.5 rounded-md ${
-                          isPaid
-                            ? "bg-amber-50 text-amber-700 border border-amber-200"
-                            : "bg-emerald-50 text-emerald-700 border border-emerald-200"
-                        }`}
-                      >
-                        {isPaid ? "Paid" : "Free"}
-                      </Badge>
-
-                      <button
-                        type="button"
-                        onClick={() => handleToggleFavorite(mat.id)}
-                        className={`p-1 rounded-md transition-colors ${
-                          favorited
-                            ? "text-rose-500 hover:bg-rose-50"
-                            : "text-slate-400 hover:text-rose-500 hover:bg-slate-50"
-                        }`}
-                        aria-label="Save note"
-                      >
-                        <Bookmark
-                          className={`size-4 ${favorited ? "fill-rose-500 text-rose-500" : ""}`}
-                        />
-                      </button>
-                    </div>
-
-                    {/* Graphic Card Illustration */}
-                    <div className="mt-3.5 aspect-16/10 w-full overflow-hidden rounded-xl bg-linear-to-br from-teal-50 via-slate-50 to-emerald-50 flex items-center justify-center border border-slate-100">
-                      <div className="flex flex-col items-center justify-center text-teal-700/70 p-2 text-center">
-                        <FileText className="size-8 stroke-[1.5]" />
-                        <span className="text-[10px] font-bold mt-1 uppercase tracking-wider text-teal-800">
-                          {mat.material_type || mat.type || "UNIT NOTES"}
+                return (
+                  <div
+                    key={sub.id}
+                    className="rounded-2xl border border-slate-200/80 bg-white p-5 shadow-xs flex flex-col justify-between hover:border-teal-300 hover:shadow-sm transition-all gap-4"
+                  >
+                    <div className="space-y-3">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex items-center gap-3 min-w-0">
+                          <div className={`flex size-11 shrink-0 items-center justify-center rounded-xl ${styling.bg}`}>
+                            <Icon className="size-5" />
+                          </div>
+                          <div className="min-w-0">
+                            <span className="text-[10px] font-mono font-bold text-slate-500 uppercase tracking-wide">
+                              {sub.code || `BP${(sub.semester || 1) * 100 + idx + 1}T`}
+                            </span>
+                            <h3 className="text-sm font-black text-slate-900 leading-snug line-clamp-2" title={sub.name}>
+                              {sub.name}
+                            </h3>
+                          </div>
+                        </div>
+                        <span className="shrink-0 text-[10px] font-extrabold px-2 py-0.5 rounded-md bg-slate-100 text-slate-700">
+                          Sem {sub.semester || 1}
                         </span>
+                      </div>
+
+                      <div className="flex items-center justify-between text-xs text-slate-500 border-t border-slate-100 pt-3">
+                        <span className="flex items-center gap-1 font-semibold text-slate-600">
+                          <FileText className="size-3.5 text-slate-400" />
+                          {unitsOrNotesCount}
+                        </span>
+
+                        {isPurchased ? (
+                          <span className="inline-flex items-center gap-1 font-bold text-teal-700 bg-teal-50 px-2 py-0.5 rounded-md border border-teal-200">
+                            <CheckCircle2 className="size-3 text-teal-600" />
+                            {isPaid ? "Purchased" : "Free Access"}
+                          </span>
+                        ) : isPaid ? (
+                          <span className="font-black text-slate-900 text-sm">
+                            ₹{displayPrice}
+                          </span>
+                        ) : (
+                          <span className="font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200 text-xs">
+                            Free
+                          </span>
+                        )}
                       </div>
                     </div>
 
-                    {/* Title & Subject */}
-                    <h3 className="mt-3 text-xs sm:text-sm font-bold text-slate-900 line-clamp-2 leading-snug group-hover:text-teal-700 transition-colors">
-                      {mat.title}
-                    </h3>
-                    <p className="mt-1 text-[11px] text-slate-500 line-clamp-1">
-                      {parentSub?.name || "B.Pharm Core Subject"}
-                    </p>
-
-                    {/* Meta: PDF, Pages & Price */}
-                    <div className="mt-3 flex items-center justify-between text-[11px] text-slate-500 font-medium">
-                      <span className="flex items-center gap-1 text-slate-400">
-                        <span className="text-rose-500 font-bold text-[10px]">PDF</span>
-                        <span>• {mat.pages || 45} pages</span>
-                      </span>
-                      {isPaid && (
-                        <span className="font-black text-slate-900 text-sm">
-                          ₹{mat.price}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Buttons: Read Now vs Buy Now / Add to Cart */}
-                  <div className="mt-4 pt-3 border-t border-slate-100 space-y-2">
-                    {isOwned ? (
-                      <Button
-                        asChild
-                        size="sm"
-                        variant="outline"
-                        className="w-full h-8 text-xs font-bold text-teal-700 border-teal-200 hover:bg-teal-50 rounded-xl"
-                      >
-                        <Link
-                          to="/viewer/$studentId/$materialId"
-                          params={{ studentId: student.id, materialId: mat.id }}
-                        >
-                          Read Now
-                        </Link>
-                      </Button>
-                    ) : (
-                      <div className="flex items-center gap-2">
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          onClick={() =>
-                            addToCart({
-                              id: mat.id,
-                              type: "material",
-                              title: mat.title,
-                              subtitle: parentSub?.name,
-                              price: Number(mat.price || 49),
-                              pages: mat.pages || 45,
-                              semester: student.semester || 1,
-                            })
-                          }
-                          className={`flex-1 h-8 text-xs font-bold rounded-xl border-border/80 ${
-                            inCart ? "text-teal-700 border-teal-300 bg-teal-50/50" : ""
-                          }`}
-                        >
-                          <ShoppingCart className="mr-1 size-3.5" />
-                          {inCart ? "In Cart" : "Add to Cart"}
-                        </Button>
+                    <div className="pt-2 border-t border-slate-100">
+                      {isPurchased ? (
                         <Button
                           asChild
                           size="sm"
-                          className="flex-1 h-8 text-xs font-bold bg-[#0e7490] hover:bg-[#0c627b] text-white rounded-xl shadow-xs"
+                          className="w-full h-8 text-xs font-bold text-teal-800 bg-teal-50 hover:bg-teal-100 border border-teal-200 rounded-xl"
                         >
                           <Link
-                            to="/checkout"
-                            search={{ productId: mat.id, productType: "material" } as any}
+                            to="/bpharm"
+                            search={{ courseId: sub.course_id || "bpharm", sem: sub.semester || 1, subjectId: sub.id } as any}
                           >
-                            Buy Now
+                            <span>Access Notes</span>
+                            <ArrowRight className="ml-1 size-3.5" />
                           </Link>
                         </Button>
-                      </div>
-                    )}
+                      ) : (
+                        <div className="flex items-center gap-2">
+                          <Button
+                            asChild
+                            variant="outline"
+                            size="sm"
+                            className="flex-1 h-8 text-[11px] font-bold text-slate-700 border-slate-200 hover:bg-slate-50 rounded-xl"
+                          >
+                            <Link
+                              to="/bpharm"
+                              search={{ courseId: sub.course_id || "bpharm", sem: sub.semester || 1, subjectId: sub.id } as any}
+                            >
+                              View Materials
+                            </Link>
+                          </Button>
+                          <Button
+                            asChild
+                            size="sm"
+                            className="flex-1 h-8 text-[11px] font-bold bg-[#0e7490] hover:bg-[#0c627b] text-white rounded-xl shadow-xs"
+                          >
+                            <Link
+                              to="/checkout"
+                              search={{ productId: sub.id, productType: "subject" } as any}
+                            >
+                              Buy Subject
+                            </Link>
+                          </Button>
+                        </div>
+                      )}
+                    </div>
                   </div>
-                </div>
-              );
-            })}
-          </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       </div>
     </StudentLayout>

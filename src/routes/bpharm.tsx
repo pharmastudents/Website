@@ -141,14 +141,44 @@ export default function SubjectWiseStudentFlowPage() {
     return subjects.find((s) => s.id === selectedSubjectId) || null;
   }, [selectedSubjectId, subjects]);
 
+  // Authoritative check: Does student own this semester package?
+  const isSemesterPurchased = (semRecord?: Semester | null, semNum?: number): boolean => {
+    if (!student) return false;
+    const sNum = semNum ?? semRecord?.semester_number;
+    const sId = semRecord?.id;
+
+    const directPurch = dbPurchases.some((p) => {
+      const st = (p.status || "").toLowerCase();
+      const paySt = ((p as any).payment_status || "").toLowerCase();
+      const isPaid = st === "unlocked" || st === "paid" || st === "active" || paySt === "paid";
+      if (!isPaid) return false;
+      if (sId && p.material_id === sId) return true;
+      if (sNum && p.material_id === `sem-${sNum}`) return true;
+      return false;
+    });
+    if (directPurch) return true;
+
+    const orderMatch = dbOrders.some((o) => {
+      if (o.status?.toLowerCase() !== "paid") return false;
+      if (o.product_type === "semester" || o.product_type === "package") {
+        if (sId && o.product_id === sId) return true;
+        if (sNum && (o.product_id === `sem-${sNum}` || o.product_title?.toLowerCase().includes(`semester ${sNum}`))) return true;
+      }
+      return false;
+    });
+    return orderMatch;
+  };
+
   // Authoritative check: Does student own this subject?
   const isSubjectPurchased = (sub: SubjectItem): boolean => {
     // 1. Free subject requires no payment and unlocks all units
     if (!sub.is_premium || !sub.price || sub.price === 0) return true;
-    if (session?.role === "admin" || isAdmin) return true;
     if (!student) return false;
 
-    // 2. Direct verified purchase record in Supabase
+    // 2. Semester package purchase unlocks all subjects in this semester
+    if (isSemesterPurchased(null, sub.semester)) return true;
+
+    // 3. Direct verified purchase record in Supabase
     const directPurch = dbPurchases.find((p) => p.material_id === sub.id);
     if (directPurch) {
       const st = (directPurch.status || "").toLowerCase();
@@ -158,7 +188,7 @@ export default function SubjectWiseStudentFlowPage() {
       }
     }
 
-    // 3. Paid order in Supabase
+    // 4. Paid order in Supabase
     const orderMatch = dbOrders.some((o) => {
       if (o.product_id === sub.id) return true;
       if (Array.isArray(o.material_ids) && o.material_ids.includes(sub.id)) return true;
@@ -175,7 +205,23 @@ export default function SubjectWiseStudentFlowPage() {
     if (isSubjectPurchased(parentSub)) return true;
     // 2. If unit is explicitly Free inside an unpaid subject -> accessible
     if (!unit.is_premium) return true;
-    // 3. Otherwise locked
+    // 3. Check direct unit or material purchase
+    if (student) {
+      const unitPurch = dbPurchases.find((p) => p.material_id === unit.id);
+      if (unitPurch) return true;
+      const mat = materials.find((m) => m.unit_id === unit.id);
+      if (mat) {
+        const matPurch = dbPurchases.find((p) => p.material_id === mat.id);
+        if (matPurch) return true;
+      }
+      const ordMatch = dbOrders.some((o) => {
+        if (o.product_id === unit.id || (mat && o.product_id === mat.id)) return true;
+        if (Array.isArray(o.material_ids) && (o.material_ids.includes(unit.id) || (mat && o.material_ids.includes(mat.id)))) return true;
+        return false;
+      });
+      if (ordMatch) return true;
+    }
+    // 4. Otherwise locked
     return false;
   };
 
@@ -194,7 +240,7 @@ export default function SubjectWiseStudentFlowPage() {
     const getUnitMaterialId = (unit: UnitItem): string => {
       const directMat = materials.find((m) => m.unit_id === unit.id);
       if (directMat) return directMat.id;
-      return `mat_u_${unit.id}`;
+      return unit.id;
     };
 
     return (
@@ -339,11 +385,21 @@ export default function SubjectWiseStudentFlowPage() {
                         </div>
                       </div>
 
-                      {/* Right badge & Read Button */}
+                      {/* Right badge & Action Button */}
                       <div className="flex items-center gap-3 shrink-0">
-                        {!unit.is_premium && (
+                        {!unit.is_premium ? (
                           <span className="rounded-md bg-emerald-50 px-2 py-0.5 text-xs font-bold text-emerald-700 border border-emerald-200">
                             Free
+                          </span>
+                        ) : unlocked ? (
+                          <span className="inline-flex items-center gap-1 rounded-md bg-teal-50 px-2 py-0.5 text-xs font-bold text-teal-800 border border-teal-200">
+                            <CheckCircle2 className="size-3 text-teal-600" />
+                            Purchased
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 rounded-md bg-amber-50 px-2 py-0.5 text-xs font-bold text-amber-800 border border-amber-200">
+                            <Lock className="size-3 text-amber-600" />
+                            Paid
                           </span>
                         )}
 
@@ -369,14 +425,14 @@ export default function SubjectWiseStudentFlowPage() {
                           <Button
                             asChild
                             size="sm"
-                            className="h-8 px-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold gap-1 border border-slate-200"
+                            className="h-8 px-3.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold gap-1.5 shadow-xs"
                           >
                             <Link
                               to="/checkout"
                               search={{ productId: activeSubject.id, productType: "subject" } as any}
                             >
-                              <Lock className="size-3 text-slate-500" />
-                              <span>Locked</span>
+                              <Lock className="size-3" />
+                              <span>Unlock / Buy</span>
                             </Link>
                           </Button>
                         )}
@@ -618,30 +674,116 @@ export default function SubjectWiseStudentFlowPage() {
             </Button>
           </div>
 
-          {/* Semester Cards Grid (Matching Reference Image Step 2) */}
+          {/* Semester Cards Grid (Semester-Wise Sales & Buy Now) */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             {semRange.map((semNum) => {
               const semSubs = subjects.filter(
                 (sub) => (sub.course_id === currentCourse.id || !sub.course_id) && sub.semester === semNum,
               );
+              const semRecord = courseSemesters.find((s) => s.semester_number === semNum);
+              const isOwned = isSemesterPurchased(semRecord, semNum);
+              const price = Number(semRecord?.price ?? currentCourse.default_semester_price ?? 399);
+              const hasContent = semSubs.length > 0;
 
               return (
-                <Link
+                <div
                   key={semNum}
-                  to="/bpharm"
-                  search={{ courseId: currentCourse.id, sem: semNum } as any}
-                  className="flex items-center justify-between p-5 rounded-2xl border border-slate-200/80 bg-white shadow-xs hover:border-teal-500 hover:bg-teal-50/20 hover:shadow-sm transition-all group"
+                  className="flex flex-col justify-between p-5 rounded-2xl border border-slate-200/90 bg-white shadow-xs hover:border-teal-400 hover:shadow-sm transition-all gap-4"
                 >
                   <div>
-                    <h3 className="text-base font-black text-slate-900 group-hover:text-teal-700 transition-colors">
-                      Semester {semNum}
-                    </h3>
-                    <p className="text-xs text-slate-500 mt-1 font-medium">
-                      {semSubs.length} Subjects
-                    </p>
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-[10px] font-mono font-bold text-teal-800 bg-teal-50 px-2.5 py-0.5 rounded-md border border-teal-200 uppercase">
+                            Semester {semNum}
+                          </span>
+                          {isOwned && (
+                            <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-200">
+                              <CheckCircle2 className="size-3" /> Purchased
+                            </span>
+                          )}
+                        </div>
+                        <h3 className="text-base font-black text-slate-900 mt-2">
+                          Semester {semNum}
+                        </h3>
+                        <p className="text-xs text-slate-500 mt-0.5 font-medium">
+                          {hasContent ? `${semSubs.length} Subjects Available` : "Content Coming Soon"}
+                        </p>
+                      </div>
+
+                      {hasContent ? (
+                        <div className="text-right">
+                          <span className="text-[10px] uppercase font-bold text-slate-400 block tracking-wider">
+                            Package Price
+                          </span>
+                          <span className="text-lg font-black text-slate-900">₹{price}</span>
+                        </div>
+                      ) : (
+                        <span className="text-[11px] font-bold text-amber-700 bg-amber-50 px-2.5 py-1 rounded-lg border border-amber-200">
+                          Coming Soon
+                        </span>
+                      )}
+                    </div>
                   </div>
-                  <ChevronRight className="size-5 text-slate-400 group-hover:text-teal-600 group-hover:translate-x-0.5 transition-all" />
-                </Link>
+
+                  <div className="pt-3 border-t border-slate-100 flex items-center gap-2">
+                    {isOwned ? (
+                      <Button
+                        asChild
+                        size="sm"
+                        className="w-full h-9 rounded-xl bg-teal-700 hover:bg-teal-800 text-white font-bold text-xs shadow-xs"
+                      >
+                        <Link
+                          to="/bpharm"
+                          search={{ courseId: currentCourse.id, sem: semNum } as any}
+                        >
+                          <span>View Semester Notes</span>
+                          <ArrowRight className="size-3.5 ml-1" />
+                        </Link>
+                      </Button>
+                    ) : hasContent ? (
+                      <>
+                        <Button
+                          asChild
+                          variant="outline"
+                          size="sm"
+                          className="flex-1 h-9 rounded-xl border-slate-200 text-slate-700 hover:bg-slate-50 font-bold text-xs"
+                        >
+                          <Link
+                            to="/bpharm"
+                            search={{ courseId: currentCourse.id, sem: semNum } as any}
+                          >
+                            View Subjects
+                          </Link>
+                        </Button>
+                        <Button
+                          asChild
+                          size="sm"
+                          className="flex-1 h-9 rounded-xl bg-[#0e7490] hover:bg-[#0c627b] text-white font-bold text-xs shadow-xs"
+                        >
+                          <Link
+                            to="/checkout"
+                            search={{
+                              productId: semRecord?.id || `sem-${semNum}`,
+                              productType: "semester",
+                            } as any}
+                          >
+                            Buy Semester (₹{price})
+                          </Link>
+                        </Button>
+                      </>
+                    ) : (
+                      <Button
+                        disabled
+                        variant="outline"
+                        size="sm"
+                        className="w-full h-9 rounded-xl bg-slate-50 border-slate-200 text-slate-400 font-semibold text-xs cursor-not-allowed"
+                      >
+                        Content Coming Soon
+                      </Button>
+                    )}
+                  </div>
+                </div>
               );
             })}
           </div>

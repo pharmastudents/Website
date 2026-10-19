@@ -376,7 +376,21 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const student = useMemo(
     () => {
-      if (session?.role !== "student") return null;
+      if (session?.role !== "student") {
+        if (session?.role === "admin") {
+          return {
+            id: session.id || "admin",
+            name: userProfile?.full_name || db.admin.name || "Admin",
+            email: userProfile?.email || db.admin.email || "admin@pharmastudents.com",
+            mobile: db.admin.phone || "",
+            college: "PharmaStudents Management",
+            year: 1,
+            semester: 1,
+            createdAt: new Date().toISOString(),
+          };
+        }
+        return null;
+      }
       const found = db.students.find((s) => s.id === session.id);
       if (found) return found;
       if (userProfile && userProfile.role === "student") {

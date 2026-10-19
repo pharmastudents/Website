@@ -567,7 +567,7 @@ export default function AdminMaterialsPage() {
                         <td className="py-3.5 px-4 whitespace-nowrap">
                           {isPaid ? (
                             <Badge className="bg-teal-700 text-white font-bold text-[10px] px-2 py-0.5">
-                              ₹{mat.price}
+                              Paid
                             </Badge>
                           ) : (
                             <Badge variant="secondary" className="font-bold text-[10px] px-2 py-0.5">
@@ -590,8 +590,8 @@ export default function AdminMaterialsPage() {
                             type="button"
                             onClick={() => void handleToggleStatus(mat)}
                             className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[10px] font-bold transition-colors ${isPublished
-                                ? "bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100"
-                                : "bg-amber-50 text-amber-700 border border-amber-200 hover:bg-amber-100"
+                              ? "bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100"
+                              : "bg-amber-50 text-amber-700 border border-amber-200 hover:bg-amber-100"
                               }`}
                             title="Click to toggle status"
                           >
@@ -621,18 +621,18 @@ export default function AdminMaterialsPage() {
 
                             {/* Edit */}
                             <Button
+                              asChild
                               variant="ghost"
                               size="icon"
                               className="size-7 text-muted-foreground hover:text-foreground"
                               title="Edit Material"
-                              onClick={() =>
-                                void navigate({
-                                  to: "/admin/materials/create",
-                                  search: { materialId: mat.id },
-                                })
-                              }
                             >
-                              <Edit2 className="size-3.5" />
+                              <Link
+                                to="/admin/materials/create"
+                                search={{ materialId: mat.id }}
+                              >
+                                <Edit2 className="size-3.5" />
+                              </Link>
                             </Button>
 
                             {/* Delete */}

@@ -191,13 +191,16 @@ export default function AdminSubjectUnitsPage() {
     try {
       if (editingUnitId) {
         // Update existing unit in Supabase
-        await AcademicService.updateUnit(editingUnitId, {
+        const updateRes = await AcademicService.updateUnit(editingUnitId, {
           title: unitTitle.trim(),
           is_premium: accessType === "paid",
           file_url: uploadedFileUrl || undefined,
           file_name: uploadedFileName || undefined,
           file_size: uploadedFileSize || undefined,
         });
+        if (!updateRes.success) {
+          throw new Error(updateRes.error || "Failed to update unit in database.");
+        }
         toast.success(`Unit updated successfully!`);
       } else {
         // Create new unit in Supabase

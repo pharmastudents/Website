@@ -45,7 +45,8 @@ export default function AdminCreateSubjectPage() {
   const [subjectCode, setSubjectCode] = useState("");
   const [subjectDescription, setSubjectDescription] = useState("");
   const [accessType, setAccessType] = useState<"free" | "paid">("paid");
-  const [price, setPrice] = useState<number>(99);
+  const [price, setPrice] = useState<number>(79);
+  const [savedPrice, setSavedPrice] = useState<number>(79);
 
   // Thumbnail State
   const [thumbnailUrl, setThumbnailUrl] = useState<string>("");
@@ -65,15 +66,44 @@ export default function AdminCreateSubjectPage() {
           setSemesters(data.semesters);
 
           if (editingSubjectId) {
-            const targetSub = data.subjects.find((s) => s.id === editingSubjectId);
-            if (targetSub) {
-              setSelectedCourseId(targetSub.course_id);
-              setSelectedSemesterId(targetSub.semester_id);
-              setSubjectName(targetSub.name);
-              setSubjectCode(targetSub.code);
+            // Find in loaded subjects
+            let targetSub = data.subjects.find((s) => s.id === editingSubjectId);
+
+            // Double-check with fresh direct query to ensure latest price and access type
+            try {
+              const { data: directSub } = await supabase
+                .from("subjects")
+                .select("*")
+                .eq("id", editingSubjectId)
+                .maybeSingle();
+
+              if (directSub) {
+                targetSub = {
+                  ...(targetSub || {}),
+                  ...directSub,
+                  price: directSub.price !== null && directSub.price !== undefined ? Number(directSub.price) : 0,
+                  is_premium: directSub.is_premium === true || Boolean(directSub.is_premium) || (Number(directSub.price) > 0),
+                  thumbnail_url: directSub.thumbnail_url || null,
+                } as any;
+              }
+            } catch (err) {
+              console.warn("Could not query direct subject, using loaded cache:", err);
+            }
+
+            if (targetSub && isMounted) {
+              setSelectedCourseId(targetSub.course_id || "");
+              setSelectedSemesterId(targetSub.semester_id || "");
+              setSubjectName(targetSub.name || "");
+              setSubjectCode(targetSub.code || "");
               setSubjectDescription(targetSub.description || "");
-              setAccessType(targetSub.is_premium || targetSub.price > 0 ? "paid" : "free");
-              setPrice(targetSub.price || 99);
+
+              const isPaid = targetSub.is_premium === true || (typeof targetSub.price === "number" && targetSub.price > 0);
+              setAccessType(isPaid ? "paid" : "free");
+
+              const currentPrice = typeof targetSub.price === "number" && targetSub.price > 0 ? targetSub.price : 79;
+              setPrice(currentPrice);
+              setSavedPrice(currentPrice);
+
               setThumbnailUrl(targetSub.thumbnail_url || "");
               setThumbnailPreview(targetSub.thumbnail_url || "");
             }
@@ -186,8 +216,8 @@ export default function AdminCreateSubjectPage() {
       return;
     }
 
-    if (accessType === "paid" && (!price || price <= 0)) {
-      toast.error("Please enter a valid price for a paid subject.");
+    if (accessType === "paid" && (!price || Number(price) <= 0)) {
+      toast.error("Please enter a valid price for a paid subject (greater than ₹0).");
       return;
     }
 
@@ -200,6 +230,9 @@ export default function AdminCreateSubjectPage() {
       const persistentThumbnail =
         thumbnailUrl && !thumbnailUrl.startsWith("blob:") ? thumbnailUrl : null;
 
+      const isPaid = accessType === "paid";
+      const finalPrice = isPaid ? Number(price) : 0;
+
       if (editingSubjectId) {
         const updateRes = await AcademicService.updateSubject(editingSubjectId, {
           course_id: selectedCourseId,
@@ -209,12 +242,14 @@ export default function AdminCreateSubjectPage() {
           name: subjectName.trim(),
           code: cleanCode,
           thumbnail_url: persistentThumbnail,
-          price: accessType === "paid" ? Number(price) : 0,
-          is_premium: accessType === "paid",
+          price: finalPrice,
+          is_premium: isPaid,
           description: subjectDescription.trim(),
         });
 
-        if (!updateRes.success) throw new Error(updateRes.error);
+        if (!updateRes.success) {
+          throw new Error(updateRes.error || "Failed to update subject in database.");
+        }
 
         toast.success(`Subject "${subjectName.trim()}" updated successfully.`);
         void navigate({ to: "/admin/subjects" });
@@ -229,11 +264,10 @@ export default function AdminCreateSubjectPage() {
         name: subjectName.trim(),
         code: cleanCode,
         thumbnail_url: persistentThumbnail,
-        price: accessType === "paid" ? Number(price) : 0,
-        is_premium: accessType === "paid",
+        price: finalPrice,
+        is_premium: isPaid,
         description: subjectDescription.trim(),
       });
-
 
       toast.success(`Subject "${created.name}" created successfully.`);
       void navigate({ to: "/admin/subjects" });
@@ -395,7 +429,6 @@ export default function AdminCreateSubjectPage() {
                       checked={accessType === "free"}
                       onChange={() => {
                         setAccessType("free");
-                        setPrice(0);
                       }}
                       className="size-4 accent-teal-600"
                     />
@@ -408,7 +441,9 @@ export default function AdminCreateSubjectPage() {
                       checked={accessType === "paid"}
                       onChange={() => {
                         setAccessType("paid");
-                        if (!price || price === 0) setPrice(99);
+                        if (!price || price === 0) {
+                          setPrice(savedPrice > 0 ? savedPrice : 79);
+                        }
                       }}
                       className="size-4 accent-teal-600"
                     />
@@ -432,11 +467,18 @@ export default function AdminCreateSubjectPage() {
                       min={1}
                       required
                       value={price || ""}
-                      onChange={(e) => setPrice(Number(e.target.value))}
-                      placeholder="99"
+                      onChange={(e) => {
+                        const val = Number(e.target.value);
+                        setPrice(val);
+                        if (val > 0) setSavedPrice(val);
+                      }}
+                      placeholder="79"
                       className="pl-7 h-10 text-xs font-bold"
                     />
                   </div>
+                  <p className="mt-1 text-[11px] text-muted-foreground">
+                    Students will pay this price to unlock all units for this subject.
+                  </p>
                 </div>
               )}
 
@@ -532,7 +574,7 @@ export default function AdminCreateSubjectPage() {
                       Paid
                     </Badge>
                     <span className="font-black text-foreground text-xs">
-                      ₹{price || 99}
+                      ₹{price || savedPrice || 79}
                     </span>
                   </div>
                 )}

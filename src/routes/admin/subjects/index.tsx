@@ -217,7 +217,7 @@ export default function AdminSubjectsPage() {
               ) : (
                 filtered.map((sub) => {
                   const courseObj = courses.find((c) => c.id === sub.course_id);
-                  const isPaid = sub.is_premium || (sub.price && sub.price > 0);
+                  const isPaid = sub.is_premium === true || (typeof sub.price === "number" && sub.price > 0);
 
                   return (
                     <tr key={sub.id} className="hover:bg-slate-50/50 transition-colors">
@@ -261,7 +261,7 @@ export default function AdminSubjectsPage() {
                               Paid
                             </span>
                             <span className="text-xs font-black text-slate-900">
-                              ₹{sub.price || 99}
+                              ₹{typeof sub.price === "number" && sub.price > 0 ? sub.price : 79}
                             </span>
                           </div>
                         ) : (

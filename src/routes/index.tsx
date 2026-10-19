@@ -29,6 +29,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { useStore, useSubjectMap, YEARS, semestersForYear } from "@/lib/store";
+import { AcademicService, type Course, type SubjectItem, type UnitItem } from "@/lib/academicService";
+import { supabase } from "@/integrations/supabase/client";
 
 export const Route = createFileRoute("/")({
   component: Index,
@@ -55,6 +57,61 @@ export default function Index() {
   const [searchQuery, setSearchQuery] = useState("");
   const [filterType, setFilterType] = useState<string>("all");
 
+  // Real Database Academic Data
+  const [dbCourses, setDbCourses] = useState<Course[]>([]);
+  const [dbSubjects, setDbSubjects] = useState<SubjectItem[]>([]);
+  const [dbUnits, setDbUnits] = useState<UnitItem[]>([]);
+  const [purchasedSubjectIds, setPurchasedSubjectIds] = useState<string[]>([]);
+  const [academicLoading, setAcademicLoading] = useState(true);
+
+  useEffect(() => {
+    let isMounted = true;
+    async function loadPublicCatalog() {
+      try {
+        const store = await AcademicService.loadAll();
+        if (isMounted) {
+          setDbCourses(store.courses.filter((c) => c.is_active));
+          setDbSubjects(store.subjects.filter((s) => s.is_active));
+          setDbUnits(store.units.filter((u) => u.is_active));
+        }
+
+        if (student?.id) {
+          const { data: purs } = await supabase
+            .from("purchases")
+            .select("material_id, status, payment_status")
+            .eq("student_id", student.id);
+          const { data: ords } = await supabase
+            .from("orders")
+            .select("product_id, material_ids, status")
+            .eq("student_id", student.id)
+            .eq("status", "Paid");
+
+          const owned = new Set<string>();
+          purs?.forEach((p) => {
+            const st = (p.status || "").toLowerCase();
+            const paySt = ((p as any).payment_status || "").toLowerCase();
+            if (st === "unlocked" || st === "paid" || st === "active" || paySt === "paid" || paySt === "free") {
+              if (p.material_id) owned.add(p.material_id);
+            }
+          });
+          ords?.forEach((o) => {
+            if (o.product_id) owned.add(o.product_id);
+            if (Array.isArray(o.material_ids)) o.material_ids.forEach((m) => owned.add(m));
+          });
+          if (isMounted) setPurchasedSubjectIds(Array.from(owned));
+        }
+      } catch (err) {
+        console.warn("Could not load landing academic data:", err);
+      } finally {
+        if (isMounted) setAcademicLoading(false);
+      }
+    }
+    void loadPublicCatalog();
+    return () => {
+      isMounted = false;
+    };
+  }, [student?.id]);
+
   const semesters = semestersForYear(selectedYear);
 
   // Keep semester in sync with selected year
@@ -64,10 +121,15 @@ export default function Index() {
   };
 
   const currentSubjects = useMemo(() => {
+    if (dbSubjects.length > 0) {
+      return dbSubjects.filter(
+        (s) => s.semester === selectedSemester || s.year === selectedYear,
+      );
+    }
     return db.subjects.filter(
       (s) => s.year === selectedYear && s.semester === selectedSemester,
     );
-  }, [db.subjects, selectedYear, selectedSemester]);
+  }, [dbSubjects, db.subjects, selectedYear, selectedSemester]);
 
   const featuredMaterials = useMemo(() => {
     let list = db.materials.filter((m) => m.published);
@@ -130,14 +192,14 @@ export default function Index() {
               </Button>
             </div>
 
-            {/* Platform Stats Row (4 Programs, 29+ Subjects, 9+ Verified Notes, 4.9 Student Rating) */}
+            {/* Platform Stats Row (Loaded from Supabase) */}
             <div className="mt-14 grid w-full max-w-4xl grid-cols-2 gap-6 sm:grid-cols-4 pt-4">
               <div className="text-center">
-                <p className="text-3xl sm:text-4xl font-extrabold text-foreground">4</p>
-                <p className="mt-1 text-xs font-medium text-muted-foreground">Programs Configured</p>
+                <p className="text-3xl sm:text-4xl font-extrabold text-foreground">{dbCourses.length || 1}</p>
+                <p className="mt-1 text-xs font-medium text-muted-foreground">{dbCourses.length === 1 ? "Program Configured" : "Programs Configured"}</p>
               </div>
               <div className="text-center">
-                <p className="text-3xl sm:text-4xl font-extrabold text-foreground">29+</p>
+                <p className="text-3xl sm:text-4xl font-extrabold text-foreground">{dbSubjects.length || 29}+</p>
                 <p className="mt-1 text-xs font-medium text-muted-foreground">Subjects Covered</p>
               </div>
               <div className="text-center">
@@ -185,11 +247,10 @@ export default function Index() {
               <button
                 key={yr}
                 onClick={() => handleYearChange(yr)}
-                className={`rounded-lg px-5 py-2.5 text-sm font-semibold transition-all ${
-                  selectedYear === yr
+                className={`rounded-lg px-5 py-2.5 text-sm font-semibold transition-all ${selectedYear === yr
                     ? "bg-primary text-primary-foreground shadow-sm"
                     : "bg-muted text-muted-foreground hover:bg-muted/80 hover:text-foreground"
-                }`}
+                  }`}
               >
                 Year {yr}
               </button>
@@ -203,11 +264,10 @@ export default function Index() {
               <button
                 key={sem}
                 onClick={() => setSelectedSemester(sem)}
-                className={`rounded-full px-4 py-1 text-xs font-medium transition-colors ${
-                  selectedSemester === sem
+                className={`rounded-full px-4 py-1 text-xs font-medium transition-colors ${selectedSemester === sem
                     ? "bg-accent text-accent-foreground font-semibold"
                     : "border border-border bg-card text-muted-foreground hover:bg-muted"
-                }`}
+                  }`}
               >
                 Semester {sem}
               </button>
@@ -217,34 +277,69 @@ export default function Index() {
           {/* Subjects Grid for Selected Semester */}
           <div className="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {currentSubjects.map((sub) => {
-              const subMaterials = db.materials.filter((m) => m.subjectId === sub.id && m.published);
+              const subUnits = dbUnits.filter((u) => u.subject_id === sub.id);
+              const isPaid = sub.is_premium === true || (Number(sub.price) > 0);
+              const isOwned = purchasedSubjectIds.includes(sub.id) || !isPaid;
+
               return (
                 <div
                   key={sub.id}
-                  className="card-shell card-hover flex flex-col justify-between p-5"
+                  className="card-shell card-hover flex flex-col justify-between p-5 rounded-2xl border border-border/80 bg-card shadow-xs hover:border-teal-400 transition-all gap-4"
                 >
-                  <div>
+                  <div className="space-y-2.5">
                     <div className="flex items-center justify-between">
-                      <span className="rounded-md bg-primary/10 px-2.5 py-1 text-xs font-medium text-primary">
+                      <span className="rounded-md bg-primary/10 px-2.5 py-1 text-xs font-bold text-primary">
                         Sem {sub.semester}
                       </span>
-                      <span className="text-xs text-muted-foreground">
-                        {subMaterials.length} {subMaterials.length === 1 ? "Material" : "Materials"}
-                      </span>
+                      {sub.code && (
+                        <span className="text-[11px] font-mono text-muted-foreground">
+                          {sub.code}
+                        </span>
+                      )}
                     </div>
-                    <h3 className="mt-3 text-base font-bold text-foreground">{sub.name}</h3>
-                    <p className="mt-1.5 text-xs text-muted-foreground">
-                      {sub.description || "Comprehensive syllabus notes and exam preparation material."}
+                    <h3 className="text-base font-black text-foreground leading-snug line-clamp-2">{sub.name}</h3>
+                    <p className="text-xs text-muted-foreground line-clamp-2">
+                      {sub.description || "Official PCI curriculum notes, unit materials, and exam question banks."}
                     </p>
+
+                    <div className="pt-2 flex items-center justify-between text-xs border-t border-border/50">
+                      <span className="text-muted-foreground font-semibold">
+                        {subUnits.length > 0 ? `${subUnits.length} Units Included` : "Curriculum Units"}
+                      </span>
+                      {isPaid ? (
+                        <span className="text-sm font-black text-foreground">
+                          ₹{sub.price || 79}
+                        </span>
+                      ) : (
+                        <span className="text-xs font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+                          Free
+                        </span>
+                      )}
+                    </div>
                   </div>
 
-                  <div className="mt-5 border-t border-border pt-4">
-                    <Button asChild variant="ghost" size="sm" className="w-full justify-between px-2 text-primary hover:text-primary">
-                      <Link to="/resources" search={{ subjectId: sub.id } as any}>
-                        <span>Explore Notes</span>
-                        <ArrowRight className="size-4" />
-                      </Link>
-                    </Button>
+                  <div className="pt-3 border-t border-border flex items-center gap-2">
+                    {isOwned ? (
+                      <Button asChild size="sm" className="w-full bg-teal-600 hover:bg-teal-700 text-white font-bold text-xs rounded-xl">
+                        <Link to="/bpharm" search={{ courseId: sub.course_id || "bpharm", sem: sub.semester, subjectId: sub.id } as any}>
+                          <span>Access Notes</span>
+                          <ArrowRight className="ml-1 size-3.5" />
+                        </Link>
+                      </Button>
+                    ) : (
+                      <>
+                        <Button asChild variant="outline" size="sm" className="flex-1 text-xs font-semibold rounded-xl">
+                          <Link to="/bpharm" search={{ courseId: sub.course_id || "bpharm", sem: sub.semester, subjectId: sub.id } as any}>
+                            View Subject
+                          </Link>
+                        </Button>
+                        <Button asChild size="sm" className="flex-1 bg-[#0e7490] hover:bg-[#0f766e] text-white text-xs font-bold rounded-xl shadow-xs">
+                          <Link to="/checkout" search={{ productId: sub.id, productType: "subject" } as any}>
+                            Buy Subject
+                          </Link>
+                        </Button>
+                      </>
+                    )}
                   </div>
                 </div>
               );
@@ -273,41 +368,37 @@ export default function Index() {
             <div className="mt-4 flex flex-wrap gap-2 md:mt-0">
               <button
                 onClick={() => setFilterType("all")}
-                className={`rounded-lg px-3.5 py-1.5 text-xs font-medium transition-colors ${
-                  filterType === "all"
+                className={`rounded-lg px-3.5 py-1.5 text-xs font-medium transition-colors ${filterType === "all"
                     ? "bg-primary text-primary-foreground"
                     : "border border-border bg-card text-muted-foreground hover:bg-muted"
-                }`}
+                  }`}
               >
                 All
               </button>
               <button
                 onClick={() => setFilterType("free")}
-                className={`rounded-lg px-3.5 py-1.5 text-xs font-medium transition-colors ${
-                  filterType === "free"
+                className={`rounded-lg px-3.5 py-1.5 text-xs font-medium transition-colors ${filterType === "free"
                     ? "bg-primary text-primary-foreground"
                     : "border border-border bg-card text-muted-foreground hover:bg-muted"
-                }`}
+                  }`}
               >
                 Free Revision
               </button>
               <button
                 onClick={() => setFilterType("notes")}
-                className={`rounded-lg px-3.5 py-1.5 text-xs font-medium transition-colors ${
-                  filterType === "notes"
+                className={`rounded-lg px-3.5 py-1.5 text-xs font-medium transition-colors ${filterType === "notes"
                     ? "bg-primary text-primary-foreground"
                     : "border border-border bg-card text-muted-foreground hover:bg-muted"
-                }`}
+                  }`}
               >
                 PDF Notes
               </button>
               <button
                 onClick={() => setFilterType("questions")}
-                className={`rounded-lg px-3.5 py-1.5 text-xs font-medium transition-colors ${
-                  filterType === "questions"
+                className={`rounded-lg px-3.5 py-1.5 text-xs font-medium transition-colors ${filterType === "questions"
                     ? "bg-primary text-primary-foreground"
                     : "border border-border bg-card text-muted-foreground hover:bg-muted"
-                }`}
+                  }`}
               >
                 Question Banks
               </button>
