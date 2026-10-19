@@ -98,7 +98,26 @@ export default function CheckoutPage() {
     async function fetchVerifiedItem(id: string) {
       setLoadingItem(true);
       try {
-        if (productType === "material") {
+        if (productType === "subject") {
+          const { data, error } = await supabase
+            .from("subjects")
+            .select("id, name, code, price, is_premium, course_id, semester, thumbnail_url, description")
+            .eq("id", id)
+            .maybeSingle();
+
+          if (isMounted) {
+            if (data && !error) {
+              setDbMaterial({
+                ...data,
+                title: data.name,
+              });
+            } else {
+              const localSub = db.subjects.find((s) => s.id === id);
+              setDbMaterial(localSub ? { ...localSub, title: localSub.name } : null);
+            }
+            setLoadingItem(false);
+          }
+        } else if (productType === "material") {
           const { data, error } = await supabase
             .from("materials")
             .select("id, title, description, price, is_premium, subject_id, year, semester")

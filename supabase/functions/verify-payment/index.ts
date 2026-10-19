@@ -280,6 +280,13 @@ serve(async (req: Request) => {
               .map((m) => String(m.id));
           }
         }
+      } else if (order.product_type === "subject") {
+        const { data: sMats } = await supabase
+          .from("materials")
+          .select("id")
+          .eq("subject_id", order.product_id);
+        const subMatIds = (sMats || []).map((m: any) => String(m.id));
+        matIdsToUnlock = [order.product_id, ...subMatIds];
       } else if (order.product_id && order.product_id !== "cart") {
         matIdsToUnlock = [order.product_id];
       }

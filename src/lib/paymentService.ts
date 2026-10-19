@@ -51,7 +51,7 @@ export interface CreateOrderParams {
   materialId?: string | undefined;
   packageId?: string | undefined;
   productId?: string | undefined;
-  productType?: "material" | "package" | "semester" | "year" | "cart" | undefined;
+  productType?: "material" | "package" | "semester" | "year" | "cart" | "subject" | undefined;
   semester?: number | undefined;
   items?: CartOrderParamItem[] | undefined;
   cartItems?: CartOrderParamItem[] | undefined;

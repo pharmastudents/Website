@@ -20,6 +20,8 @@ import {
   Eye,
   CheckCircle2,
 } from "lucide-react";
+import { SubjectThumbnail } from "@/components/subject/SubjectThumbnail";
+
 
 export const Route = createFileRoute("/dashboard/my-resources")({
   validateSearch: (
@@ -357,6 +359,15 @@ export default function MyResourcesPage() {
                               <ChevronRight className="size-4" />
                             )}
                           </button>
+
+                          <SubjectThumbnail
+                            src={(sub as any).thumbnail_url}
+                            name={sub.name}
+                            code={sub.code}
+                            className="size-10 sm:size-11 rounded-lg shrink-0"
+                            fallbackSize="sm"
+                          />
+
                           <div className="min-w-0">
                             <div className="flex items-center gap-2">
                               <h3 className="text-sm font-extrabold text-slate-900 truncate">
@@ -375,6 +386,21 @@ export default function MyResourcesPage() {
                         </div>
 
                         <div className="flex items-center gap-2 shrink-0">
+                          <Button
+                            asChild
+                            variant="ghost"
+                            size="sm"
+                            className="h-7 px-2.5 text-[11px] font-bold text-teal-700 hover:text-teal-800 hover:bg-teal-50 rounded-lg hidden sm:flex"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <Link
+                              to="/bpharm"
+                              search={{ courseId: (sub as any).course_id || "bpharm", sem: selectedSemester, subjectId: sub.id } as any}
+                            >
+                              Open Subject
+                            </Link>
+                          </Button>
+
                           {subUnlockedCount === subMaterials.length && subMaterials.length > 0 ? (
                             <Badge className="bg-emerald-50 text-emerald-700 border border-emerald-200 text-[10px] font-bold">
                               <Unlock className="size-3 mr-1" /> All Unlocked
@@ -385,6 +411,7 @@ export default function MyResourcesPage() {
                             </Badge>
                           )}
                         </div>
+
                       </div>
 
                       {/* Subject Units & Files Body */}

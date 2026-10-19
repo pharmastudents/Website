@@ -22,7 +22,7 @@ export interface PurchaseCheckResult {
 export async function checkMaterialOwnership(
   studentId: string | undefined | null,
   productId: string | undefined | null,
-  productType: "material" | "package" | "semester" | "year" | "cart" = "material"
+  productType: "material" | "package" | "semester" | "year" | "cart" | "subject" = "material"
 ): Promise<PurchaseCheckResult> {
   // 1. Validate student authentication
   if (!studentId) {
@@ -35,6 +35,52 @@ export async function checkMaterialOwnership(
   }
 
   try {
+    if (productType === "subject") {
+      // ── Subject Purchase Check ──
+      // 1. Check orders table
+      const { data: orders, error: orderErr } = await supabase
+        .from("orders")
+        .select("id, status, product_id, product_type, order_date, payment_date")
+        .eq("student_id", studentId)
+        .eq("status", "Paid")
+        .eq("product_id", productId);
+
+      if (orderErr) {
+        console.error("[PurchaseDetection] Error verifying subject order:", orderErr);
+      }
+
+      if (orders && orders.length > 0) {
+        return {
+          state: "purchased",
+          orderId: orders[0].id,
+          purchasedAt: orders[0].payment_date || orders[0].order_date,
+        };
+      }
+
+      // 2. Check purchases table for direct subject record
+      const { data: purs } = await supabase
+        .from("purchases")
+        .select("id, status, payment_status, order_id, created_at, purchased_at")
+        .eq("student_id", studentId)
+        .eq("material_id", productId);
+
+      const validSubjectPur = purs?.find((p) => {
+        const st = (p.status || "").toLowerCase();
+        const paySt = (p.payment_status || "").toLowerCase();
+        return st === "unlocked" || st === "paid" || st === "active" || paySt === "paid" || paySt === "free";
+      });
+
+      if (validSubjectPur) {
+        return {
+          state: "purchased",
+          orderId: validSubjectPur.order_id,
+          purchasedAt: validSubjectPur.purchased_at || validSubjectPur.created_at,
+        };
+      }
+
+      return { state: "not_purchased" };
+    }
+
     if (productType === "package" || productType === "semester" || productType === "year") {
       // ── Package / Semester Purchase Check ──
       // Query verified orders table for Paid status

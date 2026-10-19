@@ -747,8 +747,20 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
             setUserProfile(adminProfile);
             setSessionPersisted({ role: "admin", id: adminRecord.id }, adminProfile);
+
+            // Also synchronize with Supabase Auth so storage operations obtain authenticated JWT role
+            try {
+              await supabase.auth.signInWithPassword({
+                email: adminRecord.email || cleanInput,
+                password,
+              });
+            } catch (authSyncErr) {
+              console.warn("[AdminLogin] Supabase Auth session sync notice:", authSyncErr);
+            }
+
             return { ok: true };
           } else {
+
             return {
               ok: false,
               error: "Invalid administrator password.",

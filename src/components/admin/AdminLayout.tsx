@@ -50,6 +50,21 @@ export function AdminLayout({ children, title, subtitle, actions }: AdminLayoutP
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [notifications, setNotifications] = useState<Array<{ id: string; title: string; time: string }>>([]);
 
+  // Mobile drawer keyboard and scroll management
+  useEffect(() => {
+    if (!mobileOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setMobileOpen(false);
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    const originalOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown);
+      document.body.style.overflow = originalOverflow;
+    };
+  }, [mobileOpen]);
+
   useEffect(() => {
     async function loadNotifications() {
       try {
@@ -98,7 +113,9 @@ export function AdminLayout({ children, title, subtitle, actions }: AdminLayoutP
   const navItems = [
     { label: "Dashboard", to: "/admin", icon: LayoutDashboard, exact: true },
     { label: "Students", to: "/admin/students", icon: Users },
-    { label: "Material", to: "/admin/materials", icon: BookOpen },
+    { label: "Courses", to: "/admin/courses", icon: GraduationCap },
+    { label: "Subjects", to: "/admin/subjects", icon: FolderTree },
+    { label: "Materials", to: "/admin/materials", icon: BookOpen },
     { label: "Orders", to: "/admin/orders", icon: CreditCard },
     { label: "Reports", to: "/admin/reports", icon: BarChart3 },
   ];
@@ -287,61 +304,62 @@ export function AdminLayout({ children, title, subtitle, actions }: AdminLayoutP
             </div>
           </div>
         </div>
+      </header>
 
-        {/* Mobile Navigation Drawer */}
-        {mobileOpen && (
-          <div className="fixed inset-0 z-50 flex lg:hidden">
-            <div
-              className="fixed inset-0 bg-background/80 backdrop-blur-xs"
-              onClick={() => setMobileOpen(false)}
-            />
-            <div className="relative flex w-72 max-w-[85vw] flex-1 flex-col bg-card border-r border-border p-5 shadow-2xl">
-              <div className="flex items-center justify-between pb-4 border-b border-border">
-                <Logo to="/admin" />
-                <Button variant="ghost" size="icon" onClick={() => setMobileOpen(false)} aria-label="Close menu">
-                  <X className="size-5" />
-                </Button>
-              </div>
+      {/* Mobile Navigation Drawer (Rendered outside header to avoid stacking context clipping) */}
+      {mobileOpen && (
+        <div className="fixed inset-0 z-50 flex lg:hidden">
+          <div
+            className="fixed inset-0 bg-background/80 backdrop-blur-xs transition-opacity"
+            onClick={() => setMobileOpen(false)}
+            aria-hidden="true"
+          />
+          <div className="relative flex w-72 max-w-[85vw] flex-1 flex-col bg-card border-r border-border p-5 shadow-2xl z-10 animate-in slide-in-from-left duration-200">
+            <div className="flex items-center justify-between pb-4 border-b border-border">
+              <Logo to="/admin" />
+              <Button variant="ghost" size="icon" onClick={() => setMobileOpen(false)} aria-label="Close menu">
+                <X className="size-5" />
+              </Button>
+            </div>
 
-              <div className="mt-4 flex-1 space-y-1.5 overflow-y-auto">
-                {navItems.map((item) => {
-                  const active = isItemActive(item.to, item.exact);
-                  const Icon = item.icon;
-                  return (
-                    <Link
-                      key={item.to}
-                      to={item.to}
-                      className={`flex items-center gap-3 rounded-xl px-4 py-3 text-xs font-bold transition-all ${
-                        active
-                          ? "bg-[#0e7490] text-white shadow-xs"
-                          : "text-muted-foreground hover:bg-slate-100 hover:text-foreground"
-                      }`}
-                      onClick={() => setMobileOpen(false)}
-                    >
-                      <Icon className="size-4" />
-                      <span>{item.label}</span>
-                    </Link>
-                  );
-                })}
-              </div>
+            <div className="mt-4 flex-1 space-y-1.5 overflow-y-auto">
+              {navItems.map((item) => {
+                const active = isItemActive(item.to, item.exact);
+                const Icon = item.icon;
+                return (
+                  <Link
+                    key={item.to}
+                    to={item.to}
+                    className={`flex items-center gap-3 rounded-xl px-4 py-3 text-xs font-bold transition-all ${
+                      active
+                        ? "bg-[#0e7490] text-white shadow-xs"
+                        : "text-muted-foreground hover:bg-slate-100 hover:text-foreground"
+                    }`}
+                    onClick={() => setMobileOpen(false)}
+                  >
+                    <Icon className="size-4 shrink-0" />
+                    <span>{item.label}</span>
+                  </Link>
+                );
+              })}
+            </div>
 
-              <div className="border-t border-border pt-4">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setMobileOpen(false);
-                    setShowLogoutConfirm(true);
-                  }}
-                  className="flex w-full items-center gap-3 rounded-xl px-4 py-2.5 text-xs font-bold text-rose-600 hover:bg-rose-50"
-                >
-                  <LogOut className="size-4" />
-                  <span>Logout Admin</span>
-                </button>
-              </div>
+            <div className="border-t border-border pt-4">
+              <button
+                type="button"
+                onClick={() => {
+                  setMobileOpen(false);
+                  setShowLogoutConfirm(true);
+                }}
+                className="flex w-full items-center gap-3 rounded-xl px-4 py-2.5 text-xs font-bold text-rose-600 hover:bg-rose-50 transition-colors"
+              >
+                <LogOut className="size-4 shrink-0" />
+                <span>Logout Admin</span>
+              </button>
             </div>
           </div>
-        )}
-      </header>
+        </div>
+      )}
 
       {/* ===================================================================== */}
       {/* 2. FULL WIDTH MAIN WORKING AREA (No Sidebar, Maximum Productivity)   */}

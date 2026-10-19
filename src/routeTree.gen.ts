@@ -34,8 +34,10 @@ import { Route as ResourcesMaterialIdRouteImport } from './routes/resources/$mat
 import { Route as StudentCombosRouteImport } from './routes/student/combos'
 import { Route as ViewerMaterialIdRouteImport } from './routes/viewer/$materialId'
 import { Route as AdminCoursesIndexRouteImport } from './routes/admin/courses/index'
+import { Route as AdminCoursesCreateRouteImport } from './routes/admin/courses/create'
 import { Route as AdminMaterialsIndexRouteImport } from './routes/admin/materials/index'
 import { Route as AdminMaterialsAddRouteImport } from './routes/admin/materials/add'
+import { Route as AdminMaterialsCreateRouteImport } from './routes/admin/materials/create'
 import { Route as AdminOrdersIndexRouteImport } from './routes/admin/orders/index'
 import { Route as AdminReportsIndexRouteImport } from './routes/admin/reports/index'
 import { Route as AdminSettingsIndexRouteImport } from './routes/admin/settings/index'
@@ -43,6 +45,7 @@ import { Route as AdminSettingsPaymentRouteImport } from './routes/admin/setting
 import { Route as AdminStudentsIndexRouteImport } from './routes/admin/students/index'
 import { Route as AdminStudentsIdRouteImport } from './routes/admin/students/$id'
 import { Route as AdminSubjectsIndexRouteImport } from './routes/admin/subjects/index'
+import { Route as AdminSubjectsSubjectIdRouteImport } from './routes/admin/subjects/$subjectId'
 import { Route as AdminSubjectsCreateRouteImport } from './routes/admin/subjects/create'
 import { Route as ViewerStudentIdMaterialIdRouteImport } from './routes/viewer/$studentId/$materialId'
 import { Route as AdminMaterialsIdEditRouteImport } from './routes/admin/materials/$id/edit'
@@ -172,6 +175,11 @@ const AdminCoursesIndexRoute = AdminCoursesIndexRouteImport.update({
   path: '/admin/courses/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AdminCoursesCreateRoute = AdminCoursesCreateRouteImport.update({
+  id: '/admin/courses/create',
+  path: '/admin/courses/create',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const AdminMaterialsIndexRoute = AdminMaterialsIndexRouteImport.update({
   id: '/admin/materials/',
   path: '/admin/materials/',
@@ -180,6 +188,11 @@ const AdminMaterialsIndexRoute = AdminMaterialsIndexRouteImport.update({
 const AdminMaterialsAddRoute = AdminMaterialsAddRouteImport.update({
   id: '/admin/materials/add',
   path: '/admin/materials/add',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AdminMaterialsCreateRoute = AdminMaterialsCreateRouteImport.update({
+  id: '/admin/materials/create',
+  path: '/admin/materials/create',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AdminOrdersIndexRoute = AdminOrdersIndexRouteImport.update({
@@ -215,6 +228,11 @@ const AdminStudentsIdRoute = AdminStudentsIdRouteImport.update({
 const AdminSubjectsIndexRoute = AdminSubjectsIndexRouteImport.update({
   id: '/admin/subjects/',
   path: '/admin/subjects/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AdminSubjectsSubjectIdRoute = AdminSubjectsSubjectIdRouteImport.update({
+  id: '/admin/subjects/$subjectId',
+  path: '/admin/subjects/$subjectId',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AdminSubjectsCreateRoute = AdminSubjectsCreateRouteImport.update({
@@ -259,9 +277,12 @@ export interface FileRoutesByFullPath {
   '/admin/': typeof AdminIndexRoute
   '/dashboard/': typeof DashboardIndexRoute
   '/resources/': typeof ResourcesIndexRoute
+  '/admin/courses/create': typeof AdminCoursesCreateRoute
   '/admin/materials/add': typeof AdminMaterialsAddRoute
+  '/admin/materials/create': typeof AdminMaterialsCreateRoute
   '/admin/settings/payment': typeof AdminSettingsPaymentRoute
   '/admin/students/$id': typeof AdminStudentsIdRoute
+  '/admin/subjects/$subjectId': typeof AdminSubjectsSubjectIdRoute
   '/admin/subjects/create': typeof AdminSubjectsCreateRoute
   '/viewer/$studentId/$materialId': typeof ViewerStudentIdMaterialIdRoute
   '/admin/courses/': typeof AdminCoursesIndexRoute
@@ -298,9 +319,12 @@ export interface FileRoutesByTo {
   '/admin': typeof AdminIndexRoute
   '/dashboard': typeof DashboardIndexRoute
   '/resources': typeof ResourcesIndexRoute
+  '/admin/courses/create': typeof AdminCoursesCreateRoute
   '/admin/materials/add': typeof AdminMaterialsAddRoute
+  '/admin/materials/create': typeof AdminMaterialsCreateRoute
   '/admin/settings/payment': typeof AdminSettingsPaymentRoute
   '/admin/students/$id': typeof AdminStudentsIdRoute
+  '/admin/subjects/$subjectId': typeof AdminSubjectsSubjectIdRoute
   '/admin/subjects/create': typeof AdminSubjectsCreateRoute
   '/viewer/$studentId/$materialId': typeof ViewerStudentIdMaterialIdRoute
   '/admin/courses': typeof AdminCoursesIndexRoute
@@ -338,9 +362,12 @@ export interface FileRoutesById {
   '/admin/': typeof AdminIndexRoute
   '/dashboard/': typeof DashboardIndexRoute
   '/resources/': typeof ResourcesIndexRoute
+  '/admin/courses/create': typeof AdminCoursesCreateRoute
   '/admin/materials/add': typeof AdminMaterialsAddRoute
+  '/admin/materials/create': typeof AdminMaterialsCreateRoute
   '/admin/settings/payment': typeof AdminSettingsPaymentRoute
   '/admin/students/$id': typeof AdminStudentsIdRoute
+  '/admin/subjects/$subjectId': typeof AdminSubjectsSubjectIdRoute
   '/admin/subjects/create': typeof AdminSubjectsCreateRoute
   '/viewer/$studentId/$materialId': typeof ViewerStudentIdMaterialIdRoute
   '/admin/courses/': typeof AdminCoursesIndexRoute
@@ -379,9 +406,12 @@ export interface FileRouteTypes {
     | '/admin/'
     | '/dashboard/'
     | '/resources/'
+    | '/admin/courses/create'
     | '/admin/materials/add'
+    | '/admin/materials/create'
     | '/admin/settings/payment'
     | '/admin/students/$id'
+    | '/admin/subjects/$subjectId'
     | '/admin/subjects/create'
     | '/viewer/$studentId/$materialId'
     | '/admin/courses/'
@@ -418,9 +448,12 @@ export interface FileRouteTypes {
     | '/admin'
     | '/dashboard'
     | '/resources'
+    | '/admin/courses/create'
     | '/admin/materials/add'
+    | '/admin/materials/create'
     | '/admin/settings/payment'
     | '/admin/students/$id'
+    | '/admin/subjects/$subjectId'
     | '/admin/subjects/create'
     | '/viewer/$studentId/$materialId'
     | '/admin/courses'
@@ -457,9 +490,12 @@ export interface FileRouteTypes {
     | '/admin/'
     | '/dashboard/'
     | '/resources/'
+    | '/admin/courses/create'
     | '/admin/materials/add'
+    | '/admin/materials/create'
     | '/admin/settings/payment'
     | '/admin/students/$id'
+    | '/admin/subjects/$subjectId'
     | '/admin/subjects/create'
     | '/viewer/$studentId/$materialId'
     | '/admin/courses/'
@@ -497,9 +533,12 @@ export interface RootRouteChildren {
   AdminIndexRoute: typeof AdminIndexRoute
   DashboardIndexRoute: typeof DashboardIndexRoute
   ResourcesIndexRoute: typeof ResourcesIndexRoute
+  AdminCoursesCreateRoute: typeof AdminCoursesCreateRoute
   AdminMaterialsAddRoute: typeof AdminMaterialsAddRoute
+  AdminMaterialsCreateRoute: typeof AdminMaterialsCreateRoute
   AdminSettingsPaymentRoute: typeof AdminSettingsPaymentRoute
   AdminStudentsIdRoute: typeof AdminStudentsIdRoute
+  AdminSubjectsSubjectIdRoute: typeof AdminSubjectsSubjectIdRoute
   AdminSubjectsCreateRoute: typeof AdminSubjectsCreateRoute
   ViewerStudentIdMaterialIdRoute: typeof ViewerStudentIdMaterialIdRoute
   AdminCoursesIndexRoute: typeof AdminCoursesIndexRoute
@@ -689,6 +728,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AdminCoursesIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/admin/courses/create': {
+      id: '/admin/courses/create'
+      path: '/admin/courses/create'
+      fullPath: '/admin/courses/create'
+      preLoaderRoute: typeof AdminCoursesCreateRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/admin/materials/': {
       id: '/admin/materials/'
       path: '/admin/materials'
@@ -701,6 +747,13 @@ declare module '@tanstack/react-router' {
       path: '/admin/materials/add'
       fullPath: '/admin/materials/add'
       preLoaderRoute: typeof AdminMaterialsAddRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/admin/materials/create': {
+      id: '/admin/materials/create'
+      path: '/admin/materials/create'
+      fullPath: '/admin/materials/create'
+      preLoaderRoute: typeof AdminMaterialsCreateRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/admin/orders/': {
@@ -752,6 +805,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AdminSubjectsIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/admin/subjects/$subjectId': {
+      id: '/admin/subjects/$subjectId'
+      path: '/admin/subjects/$subjectId'
+      fullPath: '/admin/subjects/$subjectId'
+      preLoaderRoute: typeof AdminSubjectsSubjectIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/admin/subjects/create': {
       id: '/admin/subjects/create'
       path: '/admin/subjects/create'
@@ -801,9 +861,12 @@ const rootRouteChildren: RootRouteChildren = {
   AdminIndexRoute: AdminIndexRoute,
   DashboardIndexRoute: DashboardIndexRoute,
   ResourcesIndexRoute: ResourcesIndexRoute,
+  AdminCoursesCreateRoute: AdminCoursesCreateRoute,
   AdminMaterialsAddRoute: AdminMaterialsAddRoute,
+  AdminMaterialsCreateRoute: AdminMaterialsCreateRoute,
   AdminSettingsPaymentRoute: AdminSettingsPaymentRoute,
   AdminStudentsIdRoute: AdminStudentsIdRoute,
+  AdminSubjectsSubjectIdRoute: AdminSubjectsSubjectIdRoute,
   AdminSubjectsCreateRoute: AdminSubjectsCreateRoute,
   ViewerStudentIdMaterialIdRoute: ViewerStudentIdMaterialIdRoute,
   AdminCoursesIndexRoute: AdminCoursesIndexRoute,

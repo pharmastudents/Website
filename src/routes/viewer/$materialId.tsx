@@ -99,6 +99,7 @@ export default function ProtectedDocumentViewer() {
     if (!studentIdToCheck || !materialId) return;
 
     void (async () => {
+      // 1. Direct material purchase check
       const { data } = await supabase
         .from("purchases")
         .select("id")
@@ -107,9 +108,37 @@ export default function ProtectedDocumentViewer() {
         .maybeSingle();
       if (data) {
         setRemotePurchased(true);
+        return;
+      }
+
+      // 2. Parent subject purchase check (Subject-wise sales unlocks all units)
+      const targetSubId = fetchedMaterial?.subject_id || (material as any)?.subject_id || (material as any)?.subjectId;
+      if (targetSubId) {
+        const { data: subPur } = await supabase
+          .from("purchases")
+          .select("id")
+          .eq("student_id", studentIdToCheck)
+          .eq("material_id", targetSubId)
+          .maybeSingle();
+        if (subPur) {
+          setRemotePurchased(true);
+          return;
+        }
+
+        const { data: subOrd } = await supabase
+          .from("orders")
+          .select("id")
+          .eq("student_id", studentIdToCheck)
+          .eq("status", "Paid")
+          .eq("product_id", targetSubId)
+          .maybeSingle();
+        if (subOrd) {
+          setRemotePurchased(true);
+          return;
+        }
       }
     })();
-  }, [student?.id, routeStudentId, materialId]);
+  }, [student?.id, routeStudentId, materialId, fetchedMaterial?.subject_id, (material as any)?.subject_id, (material as any)?.subjectId]);
 
   // Strict Entitlement Check:
   // If note is paid, student MUST have purchased it to view notes!
