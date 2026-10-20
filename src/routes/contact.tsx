@@ -40,11 +40,11 @@ export default function ContactPage() {
             <div className="space-y-4 text-sm text-foreground">
               <div className="flex items-center gap-3">
                 <Mail className="size-5 text-primary" />
-                <span>support@studentpharma.in</span>
+                <span>pharmastudents98@gmail.com</span>
               </div>
               <div className="flex items-center gap-3">
                 <Phone className="size-5 text-primary" />
-                <span>+91 78010 64412</span>
+                {/* <span>+91 78010 64412</span> */}
               </div>
               <div className="flex items-center gap-3">
                 <MapPin className="size-5 text-primary" />

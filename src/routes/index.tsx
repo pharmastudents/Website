@@ -24,11 +24,10 @@ import {
   Link2,
 } from "lucide-react";
 import { SiteLayout } from "@/components/site/SiteLayout";
-import { ResourceCard } from "@/components/site/ResourceCard";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { useStore, useSubjectMap, YEARS, semestersForYear } from "@/lib/store";
+import { useStore, YEARS, semestersForYear } from "@/lib/store";
 import { AcademicService, type Course, type SubjectItem, type UnitItem } from "@/lib/academicService";
 import { supabase } from "@/integrations/supabase/client";
 
@@ -39,7 +38,6 @@ export const Route = createFileRoute("/")({
 export default function Index() {
   const { db, session, student, isAdmin, ready } = useStore();
   const navigate = useNavigate();
-  const subjectMap = useSubjectMap();
 
   // Automatic Re-visit: Always redirect logged-in users directly to their dashboard
   useEffect(() => {
@@ -54,8 +52,6 @@ export default function Index() {
 
   const [selectedYear, setSelectedYear] = useState<number>(1);
   const [selectedSemester, setSelectedSemester] = useState<number>(1);
-  const [searchQuery, setSearchQuery] = useState("");
-  const [filterType, setFilterType] = useState<string>("all");
 
   // Real Database Academic Data
   const [dbCourses, setDbCourses] = useState<Course[]>([]);
@@ -131,26 +127,6 @@ export default function Index() {
     );
   }, [dbSubjects, db.subjects, selectedYear, selectedSemester]);
 
-  const featuredMaterials = useMemo(() => {
-    let list = db.materials.filter((m) => m.published);
-    if (filterType === "free") {
-      list = list.filter((m) => !m.isPremium);
-    } else if (filterType === "notes") {
-      list = list.filter((m) => m.type === "PDF Notes");
-    } else if (filterType === "questions") {
-      list = list.filter((m) => m.type === "Important Questions");
-    }
-    if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase();
-      list = list.filter(
-        (m) =>
-          m.title.toLowerCase().includes(q) ||
-          m.description.toLowerCase().includes(q) ||
-          (subjectMap.get(m.subjectId)?.name.toLowerCase().includes(q) ?? false),
-      );
-    }
-    return list.slice(0, 6);
-  }, [db.materials, filterType, searchQuery, subjectMap]);
 
   return (
     <SiteLayout>
@@ -344,84 +320,6 @@ export default function Index() {
                 </div>
               );
             })}
-          </div>
-        </div>
-      </section>
-
-      {/* 3. Featured Study Materials & Instant Preview */}
-      <section className="border-t border-border surface-section py-16 sm:py-20">
-        <div className="mx-auto max-w-6xl px-4 sm:px-6">
-          <div className="flex flex-col md:flex-row md:items-end md:justify-between">
-            <div>
-              <p className="text-xs font-bold tracking-widest text-primary uppercase">
-                Featured Notes
-              </p>
-              <h2 className="mt-2 text-2xl font-bold text-foreground sm:text-3xl">
-                Popular B.Pharm Study Materials
-              </h2>
-              <p className="mt-2 text-sm text-muted-foreground">
-                High-yield PDF notes, formula sheets, and repeated university questions.
-              </p>
-            </div>
-
-            {/* Filter Pills */}
-            <div className="mt-4 flex flex-wrap gap-2 md:mt-0">
-              <button
-                onClick={() => setFilterType("all")}
-                className={`rounded-lg px-3.5 py-1.5 text-xs font-medium transition-colors ${filterType === "all"
-                    ? "bg-primary text-primary-foreground"
-                    : "border border-border bg-card text-muted-foreground hover:bg-muted"
-                  }`}
-              >
-                All
-              </button>
-              <button
-                onClick={() => setFilterType("free")}
-                className={`rounded-lg px-3.5 py-1.5 text-xs font-medium transition-colors ${filterType === "free"
-                    ? "bg-primary text-primary-foreground"
-                    : "border border-border bg-card text-muted-foreground hover:bg-muted"
-                  }`}
-              >
-                Free Revision
-              </button>
-              <button
-                onClick={() => setFilterType("notes")}
-                className={`rounded-lg px-3.5 py-1.5 text-xs font-medium transition-colors ${filterType === "notes"
-                    ? "bg-primary text-primary-foreground"
-                    : "border border-border bg-card text-muted-foreground hover:bg-muted"
-                  }`}
-              >
-                PDF Notes
-              </button>
-              <button
-                onClick={() => setFilterType("questions")}
-                className={`rounded-lg px-3.5 py-1.5 text-xs font-medium transition-colors ${filterType === "questions"
-                    ? "bg-primary text-primary-foreground"
-                    : "border border-border bg-card text-muted-foreground hover:bg-muted"
-                  }`}
-              >
-                Question Banks
-              </button>
-            </div>
-          </div>
-
-          {/* Grid of Materials */}
-          <div className="mt-8 grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
-            {featuredMaterials.map((material) => (
-              <ResourceCard
-                key={material.id}
-                material={material}
-                subject={subjectMap.get(material.subjectId)}
-              />
-            ))}
-          </div>
-
-          <div className="mt-12 text-center">
-            <Button asChild size="lg" variant="outline">
-              <Link to="/resources">
-                Browse Complete Resource Directory <ArrowRight className="ml-2 size-4" />
-              </Link>
-            </Button>
           </div>
         </div>
       </section>

@@ -137,7 +137,7 @@ export function Navbar() {
             className="size-9 text-muted-foreground hover:text-foreground"
             aria-label="Shopping Cart"
           >
-            <Link to="/packages">
+            <Link to="/cart">
               <ShoppingCart className="size-4.5" />
             </Link>
           </Button>
