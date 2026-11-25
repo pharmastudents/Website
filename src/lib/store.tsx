@@ -27,11 +27,14 @@ import type {
 } from "./types";
 
 import { supabase } from "@/integrations/supabase/client";
+import {
+  isPasswordRecoveryActive,
+  setPasswordRecoveryActive,
+} from "@/lib/passwordRecovery";
 
 const DB_KEY = "sp_db_v2";
 const SESSION_KEY = "sp_session_v2";
 const PROFILE_KEY = "sp_user_profile_v2";
-
 function loadProfile(): UserProfile | null {
   try {
     const raw = localStorage.getItem(PROFILE_KEY);
@@ -107,6 +110,8 @@ type Ctx = {
   ) => Promise<{ ok: boolean; error?: string }>;
   login: (identifier: string, password: string) => Promise<{ ok: boolean; error?: string; role?: string }>;
   adminLogin: (userId: string, password: string) => Promise<{ ok: boolean; error?: string }>;
+  requestPasswordReset: (email: string) => Promise<{ ok: boolean; error?: string }>;
+  updatePassword: (newPassword: string) => Promise<{ ok: boolean; error?: string }>;
   logout: () => Promise<void>;
   updateProfile: (patch: Partial<Student>) => void;
   updateStudent: (studentId: string, patch: Partial<Student>) => void;
@@ -268,6 +273,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         const stored = loadSession();
         const storedProf = loadProfile();
 
+        // A password-recovery link leaves a limited session behind. Do not treat it
+        // as a normal login: hold the user on /reset-password until a new password
+        // is saved (or they leave the flow).
+        if (isPasswordRecoveryActive()) {
+          setSession(null);
+          setUserProfile(null);
+          return;
+        }
+
         const { data: { session: activeSession } } = await supabase.auth.getSession();
         if (activeSession?.user) {
           const { data: profile } = await supabase
@@ -316,6 +330,34 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     void initAuth();
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, currentSession) => {
+      // Clicking a recovery link signs the user in with a limited session.
+      // Flag it and let /reset-password take over instead of the dashboard.
+      if (event === "PASSWORD_RECOVERY") {
+        setPasswordRecoveryActive(true);
+        setSession(null);
+        setUserProfile(null);
+        try {
+          localStorage.removeItem(SESSION_KEY);
+          localStorage.removeItem(PROFILE_KEY);
+        } catch {
+          /* ignore */
+        }
+        if (
+          typeof window !== "undefined" &&
+          !window.location.pathname.startsWith("/reset-password")
+        ) {
+          const redirect = new URLSearchParams(window.location.search).get("redirect");
+          window.location.replace(
+            `/reset-password${redirect ? `?redirect=${encodeURIComponent(redirect)}` : ""}`,
+          );
+        }
+        return;
+      }
+
+      if (isPasswordRecoveryActive()) {
+        return;
+      }
+
       if (currentSession?.user) {
         const { data: profile } = await supabase
           .from("profiles")
@@ -831,12 +873,63 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       return { ok: true };
     },
 
+    /**
+     * Sends a Supabase Auth recovery email. This never creates, edits or deletes
+     * anything: existing accounts, passwords and purchases are untouched until the
+     * student opens the link and deliberately sets a new password.
+     */
+    async requestPasswordReset(email) {
+      const value = email.trim().toLowerCase();
+      if (!value) return { ok: false, error: "Please enter your registered email address." };
+
+      const origin = typeof window !== "undefined" ? window.location.origin : "";
+      const options = origin ? { redirectTo: `${origin}/reset-password` } : {};
+
+      const { error } = await supabase.auth.resetPasswordForEmail(value, options);
+      // Unknown addresses are answered with success on purpose (no account enumeration).
+      if (error && !/user not found/i.test(error.message ?? "")) {
+        return { ok: false, error: error.message };
+      }
+      return { ok: true };
+    },
+
+    /**
+     * Applies a new password for the account in the current recovery session.
+     * Only the password changes — every other field of the account stays as-is.
+     */
+    async updatePassword(newPassword) {
+      const {
+        data: { session: active },
+      } = await supabase.auth.getSession();
+      if (!active?.user) {
+        return {
+          ok: false,
+          error: "Your reset link is missing or has expired. Please request a new one.",
+        };
+      }
+
+      const { error } = await supabase.auth.updateUser({ password: newPassword });
+      if (error) return { ok: false, error: error.message };
+
+      // The password is now set: leave recovery mode and hand the user a clean session.
+      setPasswordRecoveryActive(false);
+      try {
+        await supabase.auth.signOut();
+      } catch {
+        /* ignore */
+      }
+      setUserProfile(null);
+      setSessionPersisted(null, null);
+      return { ok: true };
+    },
+
     async logout() {
       try {
         await supabase.auth.signOut();
       } catch {
         /* ignore */
       }
+      setPasswordRecoveryActive(false);
       try {
         localStorage.removeItem(PROFILE_KEY);
       } catch {

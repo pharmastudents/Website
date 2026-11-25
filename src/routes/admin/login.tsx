@@ -67,7 +67,8 @@ export default function AdminLoginPage() {
             </div>
             <h1 className="mt-4 text-2xl font-extrabold text-foreground">Administrator Access</h1>
             <p className="mt-1.5 text-xs text-muted-foreground">
-              Sign in with authorized administrator credentials to manage subjects, materials, and student accounts.
+              Sign in with authorized administrator credentials to manage subjects, materials, and
+              student accounts.
             </p>
           </div>
 
@@ -87,9 +88,23 @@ export default function AdminLoginPage() {
             </div>
 
             <div>
-              <label className="text-xs font-semibold text-muted-foreground">Password</label>
+              <div className="flex items-center justify-between">
+                <label
+                  htmlFor="admin-password"
+                  className="text-xs font-semibold text-muted-foreground"
+                >
+                  Password
+                </label>
+                <Link
+                  to="/forgot-password"
+                  className="text-xs font-semibold text-primary hover:underline"
+                >
+                  Forgot password?
+                </Link>
+              </div>
               <div className="relative mt-1.5">
                 <Input
+                  id="admin-password"
                   required
                   type={showPassword ? "text" : "password"}
                   autoComplete="current-password"
@@ -127,7 +142,8 @@ export default function AdminLoginPage() {
           <div className="mt-6 rounded-xl border border-primary/20 bg-primary/5 p-3.5 text-center text-xs text-muted-foreground">
             <span className="font-semibold text-foreground">Authorized Access Only</span>
             <p className="mt-0.5 text-[11px]">
-              Administrative rights are restricted to authorized personnel. Use your Supabase administrator account to sign in.
+              Administrative rights are restricted to authorized personnel. Use your Supabase
+              administrator account to sign in.
             </p>
           </div>
         </div>
@@ -140,4 +156,3 @@ export default function AdminLoginPage() {
     </div>
   );
 }
-
