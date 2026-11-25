@@ -12,4 +12,11 @@ export default defineConfig({
     // nitro/vite builds from this
     server: { entry: "server" },
   },
+  vite: {
+    server: {
+      host: "0.0.0.0",
+      // Preview/proxy hosts are dynamic, so don't pin an allow-list.
+      allowedHosts: true,
+    },
+  },
 });
