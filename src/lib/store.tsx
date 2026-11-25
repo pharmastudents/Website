@@ -27,33 +27,14 @@ import type {
 } from "./types";
 
 import { supabase } from "@/integrations/supabase/client";
+import {
+  isPasswordRecoveryActive,
+  setPasswordRecoveryActive,
+} from "@/lib/passwordRecovery";
 
 const DB_KEY = "sp_db_v2";
 const SESSION_KEY = "sp_session_v2";
 const PROFILE_KEY = "sp_user_profile_v2";
-// Set by Supabase when the current session came from a password-recovery link.
-// While this flag is present the app must NOT treat the user as normally signed in.
-const RECOVERY_FLAG_KEY = "sp_password_recovery";
-
-export function isPasswordRecoveryActive(): boolean {
-  if (typeof window === "undefined") return false;
-  try {
-    return window.localStorage.getItem(RECOVERY_FLAG_KEY) === "1";
-  } catch {
-    return false;
-  }
-}
-
-function setPasswordRecoveryActive(active: boolean) {
-  if (typeof window === "undefined") return;
-  try {
-    if (active) window.localStorage.setItem(RECOVERY_FLAG_KEY, "1");
-    else window.localStorage.removeItem(RECOVERY_FLAG_KEY);
-  } catch {
-    /* ignore */
-  }
-}
-
 function loadProfile(): UserProfile | null {
   try {
     const raw = localStorage.getItem(PROFILE_KEY);
@@ -127,10 +108,7 @@ type Ctx = {
   register: (
     input: Omit<Student, "id" | "passwordHash" | "createdAt"> & { password: string },
   ) => Promise<{ ok: boolean; error?: string }>;
-  login: (
-    identifier: string,
-    password: string,
-  ) => Promise<{ ok: boolean; error?: string; role?: string }>;
+  login: (identifier: string, password: string) => Promise<{ ok: boolean; error?: string; role?: string }>;
   adminLogin: (userId: string, password: string) => Promise<{ ok: boolean; error?: string }>;
   requestPasswordReset: (email: string) => Promise<{ ok: boolean; error?: string }>;
   updatePassword: (newPassword: string) => Promise<{ ok: boolean; error?: string }>;
@@ -304,9 +282,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           return;
         }
 
-        const {
-          data: { session: activeSession },
-        } = await supabase.auth.getSession();
+        const { data: { session: activeSession } } = await supabase.auth.getSession();
         if (activeSession?.user) {
           const { data: profile } = await supabase
             .from("profiles")
@@ -318,10 +294,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             const userProf = profile as UserProfile;
             setUserProfile(userProf);
             setSession({ role: userProf.role, id: activeSession.user.id });
-            localStorage.setItem(
-              SESSION_KEY,
-              JSON.stringify({ role: userProf.role, id: activeSession.user.id }),
-            );
+            localStorage.setItem(SESSION_KEY, JSON.stringify({ role: userProf.role, id: activeSession.user.id }));
             localStorage.setItem(PROFILE_KEY, JSON.stringify(userProf));
           } else {
             const isSiddu = activeSession.user.email?.toLowerCase() === "siddu@gmail.com";
@@ -356,9 +329,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
     void initAuth();
 
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange(async (event, currentSession) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, currentSession) => {
       // Clicking a recovery link signs the user in with a limited session.
       // Flag it and let /reset-password take over instead of the dashboard.
       if (event === "PASSWORD_RECOVERY") {
@@ -398,10 +369,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           const userProf = profile as UserProfile;
           setUserProfile(userProf);
           setSession({ role: userProf.role, id: currentSession.user.id });
-          localStorage.setItem(
-            SESSION_KEY,
-            JSON.stringify({ role: userProf.role, id: currentSession.user.id }),
-          );
+          localStorage.setItem(SESSION_KEY, JSON.stringify({ role: userProf.role, id: currentSession.user.id }));
           localStorage.setItem(PROFILE_KEY, JSON.stringify(userProf));
         } else {
           const isSiddu = currentSession.user.email?.toLowerCase() === "siddu@gmail.com";
@@ -448,48 +416,51 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  const student = useMemo(() => {
-    if (session?.role !== "student") {
-      if (session?.role === "admin") {
+  const student = useMemo(
+    () => {
+      if (session?.role !== "student") {
+        if (session?.role === "admin") {
+          return {
+            id: session.id || "admin",
+            name: userProfile?.full_name || db.admin.name || "Admin",
+            email: userProfile?.email || db.admin.email || "admin@pharmastudents.com",
+            mobile: db.admin.phone || "",
+            college: "PharmaStudents Management",
+            year: 1,
+            semester: 1,
+            createdAt: new Date().toISOString(),
+          };
+        }
+        return null;
+      }
+      const found = db.students.find((s) => s.id === session.id);
+      if (found) return found;
+      if (userProfile && userProfile.role === "student") {
         return {
-          id: session.id || "admin",
-          name: userProfile?.full_name || db.admin.name || "Admin",
-          email: userProfile?.email || db.admin.email || "admin@pharmastudents.com",
-          mobile: db.admin.phone || "",
-          college: "PharmaStudents Management",
-          year: 1,
-          semester: 1,
-          createdAt: new Date().toISOString(),
+          id: userProfile.id,
+          name: userProfile.full_name || "Student",
+          email: userProfile.email || "student@pharmastudents.com",
+          mobile: userProfile.mobile || "",
+          college: userProfile.college || "",
+          year: userProfile.year || 1,
+          semester: userProfile.semester || 1,
+          createdAt: userProfile.created_at || new Date().toISOString(),
         };
       }
-      return null;
-    }
-    const found = db.students.find((s) => s.id === session.id);
-    if (found) return found;
-    if (userProfile && userProfile.role === "student") {
+      // Guaranteed fallback so student is never null when session is valid
       return {
-        id: userProfile.id,
-        name: userProfile.full_name || "Student",
-        email: userProfile.email || "student@pharmastudents.com",
-        mobile: userProfile.mobile || "",
-        college: userProfile.college || "",
-        year: userProfile.year || 1,
-        semester: userProfile.semester || 1,
-        createdAt: userProfile.created_at || new Date().toISOString(),
+        id: session.id,
+        name: "Student",
+        email: "student@pharmastudents.com",
+        mobile: "",
+        college: "",
+        year: 1,
+        semester: 1,
+        createdAt: new Date().toISOString(),
       };
-    }
-    // Guaranteed fallback so student is never null when session is valid
-    return {
-      id: session.id,
-      name: "Student",
-      email: "student@pharmastudents.com",
-      mobile: "",
-      college: "",
-      year: 1,
-      semester: 1,
-      createdAt: new Date().toISOString(),
-    };
-  }, [db.students, session, userProfile]);
+    },
+    [db.students, session, userProfile],
+  );
 
   const hasAccess = useCallback(
     (material: Material): boolean => {
@@ -499,7 +470,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       const isPaid = Boolean(
         (material as any).isPremium === true ||
         (material as any).is_premium === true ||
-        Number(material.price || 0) > 0,
+        Number(material.price || 0) > 0
       );
 
       // Only free materials (price 0 and not marked premium) are accessible by default
@@ -513,10 +484,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         (p) =>
           p.studentId === student.id &&
           p.materialId === material.id &&
-          (p.status === "unlocked" ||
-            (p as any).status === "paid" ||
-            (p as any).payment_status === "paid" ||
-            (p as any).payment_status === "free"),
+          (p.status === "unlocked" || (p as any).status === "paid" || (p as any).payment_status === "paid" || (p as any).payment_status === "free"),
       );
       if (directUnlocked) return true;
 
@@ -534,17 +502,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       const semesterPackageUnlocked = db.orders.some((o) => {
         if (o.studentId !== student.id || o.status !== "Paid") return false;
 
-        if (
-          (o.productType as string) === "package" ||
-          o.productType === "semester" ||
-          o.productType === "year"
-        ) {
+        if ((o.productType as string) === "package" || o.productType === "semester" || o.productType === "year") {
           const pkg = db.packages.find((p) => p.id === o.productId);
           if (pkg) {
             if (pkg.type === "semester" && pkg.semester === material.semester) return true;
             if (pkg.type === "year" && pkg.year === material.year) return true;
-            if (Array.isArray(pkg.materialIds) && pkg.materialIds.includes(material.id))
-              return true;
+            if (Array.isArray(pkg.materialIds) && pkg.materialIds.includes(material.id)) return true;
           }
           if (
             o.productTitle?.toLowerCase().includes(`semester ${material.semester}`) ||
@@ -613,10 +576,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     });
 
     // Subject Sales
-    const subjectMap = new Map<
-      string,
-      { subjectName: string; revenue: number; salesCount: number }
-    >();
+    const subjectMap = new Map<string, { subjectName: string; revenue: number; salesCount: number }>();
     db.subjects.forEach((s) => {
       subjectMap.set(s.id, { subjectName: s.name, revenue: 0, salesCount: 0 });
     });
@@ -765,25 +725,24 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
       if (authError || !authData.user) {
         const errorMsg = (authError?.message || "").toLowerCase();
-        if (errorMsg.includes("invalid login credentials") || errorMsg.includes("user not found")) {
+        if (
+          errorMsg.includes("invalid login credentials") ||
+          errorMsg.includes("user not found")
+        ) {
           return {
             ok: false,
-            error:
-              "Account not found or password incorrect. If you are a new student, please Register first.",
+            error: "Account not found or password incorrect. If you are a new student, please Register first.",
           };
         }
         if (errorMsg.includes("email not confirmed")) {
           return {
             ok: false,
-            error:
-              "Email not confirmed. Please check your inbox or disable email confirmation in Supabase settings.",
+            error: "Email not confirmed. Please check your inbox or disable email confirmation in Supabase settings.",
           };
         }
         return {
           ok: false,
-          error:
-            authError?.message ||
-            "Invalid email or password. Please register if you don't have an account.",
+          error: authError?.message || "Invalid email or password. Please register if you don't have an account.",
         };
       }
 
@@ -802,14 +761,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         };
       }
 
-      const role = (profile?.role ||
-        (authData.user.email === "siddu@gmail.com" ? "admin" : "student")) as "admin" | "student";
+      const role = (profile?.role || (authData.user.email === "siddu@gmail.com" ? "admin" : "student")) as "admin" | "student";
       const userProf = (profile as UserProfile) || {
         id: authData.user.id,
         email: key,
-        full_name:
-          ((authData.user.user_metadata as Record<string, any>)?.["full_name"] as string) ||
-          key.split("@")[0],
+        full_name: ((authData.user.user_metadata as Record<string, any>)?.[
+          "full_name"
+        ] as string) || key.split("@")[0],
         role,
       };
 
@@ -858,6 +816,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
             return { ok: true };
           } else {
+
             return {
               ok: false,
               error: "Invalid administrator password.",
@@ -889,7 +848,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         .maybeSingle();
 
       const isAuthorizedAdmin =
-        profile?.role === "admin" || authData.user.email?.toLowerCase() === "siddu@gmail.com";
+        profile?.role === "admin" ||
+        authData.user.email?.toLowerCase() === "siddu@gmail.com";
 
       if (!isAuthorizedAdmin) {
         await supabase.auth.signOut();
@@ -902,9 +862,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       const adminProfile: UserProfile = (profile as UserProfile) || {
         id: authData.user.id,
         email: authData.user.email || cleanInput,
-        full_name:
-          ((authData.user.user_metadata as Record<string, any>)?.["full_name"] as string) ||
-          "Siddu Admin",
+        full_name: ((authData.user.user_metadata as Record<string, any>)?.[
+          "full_name"
+        ] as string) || "Siddu Admin",
         role: "admin",
       };
 
@@ -1106,9 +1066,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
       // Add purchases to student library
       const newPurchases = materialIds
-        .filter(
-          (mid) => !db.purchases.some((p) => p.studentId === student.id && p.materialId === mid),
-        )
+        .filter((mid) => !db.purchases.some((p) => p.studentId === student.id && p.materialId === mid))
         .map((mid) => ({
           id: generateId("pur"),
           studentId: student.id,
@@ -1136,9 +1094,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
     toggleFavorite(materialId) {
       if (!student) return;
-      const has = db.favorites.some(
-        (f) => f.studentId === student.id && f.materialId === materialId,
-      );
+      const has = db.favorites.some((f) => f.studentId === student.id && f.materialId === materialId);
       persist({
         ...db,
         favorites: has
@@ -1148,23 +1104,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     },
 
     isFavorite(materialId) {
-      return (
-        !!student &&
-        db.favorites.some((f) => f.studentId === student.id && f.materialId === materialId)
-      );
+      return !!student && db.favorites.some((f) => f.studentId === student.id && f.materialId === materialId);
     },
 
     trackView(materialId) {
       if (!student) return;
-      const rest = db.recent.filter(
-        (r) => !(r.studentId === student.id && r.materialId === materialId),
-      );
+      const rest = db.recent.filter((r) => !(r.studentId === student.id && r.materialId === materialId));
       persist({
         ...db,
-        recent: [
-          { studentId: student.id, materialId, at: new Date().toISOString() },
-          ...rest,
-        ].slice(0, 60),
+        recent: [{ studentId: student.id, materialId, at: new Date().toISOString() }, ...rest].slice(0, 60),
       });
     },
 
@@ -1189,8 +1137,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       if (!student) return;
       const material = db.materials.find((m) => m.id === materialId);
       if (!material) return;
-      if (db.purchases.some((p) => p.studentId === student.id && p.materialId === materialId))
-        return;
+      if (db.purchases.some((p) => p.studentId === student.id && p.materialId === materialId)) return;
 
       const newPurchase = {
         id: generateId("pur"),
@@ -1268,5 +1215,4 @@ export function useSubjectMap() {
 export const YEARS = [1, 2, 3, 4] as const;
 export const SEMESTERS = [1, 2, 3, 4, 5, 6, 7, 8] as const;
 export const semestersForYear = (year: number) => [year * 2 - 1, year * 2];
-export const formatPrice = (value: number) =>
-  value > 0 ? `₹${value.toLocaleString("en-IN")}` : "Free";
+export const formatPrice = (value: number) => (value > 0 ? `₹${value.toLocaleString("en-IN")}` : "Free");

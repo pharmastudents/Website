@@ -4,7 +4,8 @@ import { Logo } from "@/components/site/Logo";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { supabase } from "@/integrations/supabase/client";
-import { useStore, isPasswordRecoveryActive } from "@/lib/store";
+import { useStore } from "@/lib/store";
+import { isPasswordRecoveryActive } from "@/lib/passwordRecovery";
 import {
   friendlyAuthError,
   isPasswordAllowed,
