@@ -84,16 +84,18 @@ export default function LoginPage() {
           <div className="text-center">
             <h1 className="text-2xl font-extrabold text-foreground">Student Login</h1>
             <p className="mt-2 text-xs text-muted-foreground">
-              Sign in with your registered email to access your unlocked notes, syllabus, and study materials.
+              Sign in with your registered email to access your unlocked notes, syllabus, and study
+              materials.
             </p>
           </div>
 
           <form onSubmit={handleSubmit} className="mt-6 space-y-4">
             <div>
-              <label className="text-xs font-semibold text-muted-foreground">
+              <label htmlFor="login-email" className="text-xs font-semibold text-muted-foreground">
                 Email Address
               </label>
               <Input
+                id="login-email"
                 required
                 type="email"
                 autoComplete="email"
@@ -106,9 +108,24 @@ export default function LoginPage() {
             </div>
 
             <div>
-              <label className="text-xs font-semibold text-muted-foreground">Password</label>
+              <div className="flex items-center justify-between">
+                <label
+                  htmlFor="login-password"
+                  className="text-xs font-semibold text-muted-foreground"
+                >
+                  Password
+                </label>
+                <Link
+                  to="/forgot-password"
+                  search={searchParams.redirect ? { redirect: searchParams.redirect } : {}}
+                  className="text-xs font-semibold text-primary hover:underline"
+                >
+                  Forgot password?
+                </Link>
+              </div>
               <div className="relative mt-1.5">
                 <Input
+                  id="login-password"
                   required
                   type={showPassword ? "text" : "password"}
                   autoComplete="current-password"
@@ -159,4 +176,3 @@ export default function LoginPage() {
     </div>
   );
 }
-
